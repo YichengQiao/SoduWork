@@ -183,6 +183,8 @@ if __name__ == "__main__":
                 install.install("update", lambda _: None)
                 self.assertEqual(install.installation()[1], "1.2.0")
                 self.assertFalse(Path(console).exists())
-                install.install("uninstall", lambda _: None)
+                with patch.object(install.shutil, "rmtree", side_effect=PermissionError):
+                    self.assertIn("已卸载", install.install("uninstall", lambda _: None))
                 self.assertEqual(install.installation(), ("", ""))
+                install.install("uninstall", lambda _: None)
                 self.assertEqual(list((install.root() / "versions").iterdir()), [])
