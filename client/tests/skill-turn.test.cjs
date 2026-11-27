@@ -105,6 +105,7 @@ test('production IPC captures only valid names and publishes a recoverable skill
     submit(text, files, options) { sent.push({ text, files, options }); return { accepted: true, completion: Promise.resolve(skills.failure(Error('revoked'))) }; } };
   const context = { require: createRequire(ipcPath), path, app: { getPath: () => root }, BrowserWindow: {},
     _uiWindow: require('../main/pi-session/ui-window').create(),
+    planningScene: require('../main/agent-runtime/planning-scene.cjs'),
     _cloudHandoff: { guard: () => null },
     firstTurnTitle: { prepare: () => null, accepted() {} },
     updateWorkloads: { guard: () => ({ ok: true }) }, session: { get: () => handle },

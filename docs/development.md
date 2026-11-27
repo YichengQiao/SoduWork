@@ -87,6 +87,12 @@ npm start
 
 在 `client/` 运行 `npm test` 和 `npm run check:layout`。Electron 端到端检查见本目录的 `e2e/`，按脚本选择所需环境。`dist/`、`.runtime/` 和生成的 `runner/` 文件是产物，不要提交或复制旧版二进制替代源码。
 
+### 可选的本机 Planning Harness
+
+验证集成版客户端时，准备已批准的 `soduwork-planning-harness` wheel、独立记录的 SHA-256，以及包含目标平台锁定依赖 wheel 的目录。将 `SODUWORK_PLANNING_WHEEL` 和 `SODUWORK_PLANNING_WHEELHOUSE` 设为对应的绝对路径，将 `SODUWORK_PLANNING_SHA256` 设为批准的摘要。在 `client/` 运行 `node scripts/prepare-planning.cjs --development`，再运行 `npm start`。打包客户端时使用相同的三个构建参数。
+
+新建普通业务会话后，客户端通过本机 Runner 的 ACP 标准输入输出通道调用 Planning。新建 Coding 会话会使用本机 Pi。客户端代发模型 API 请求，并在 Planning 写入工作区之前提示用户审批。终端用户随集成版应用获得运行环境。
+
 ## 技能和插件
 
 `skills/<name>/SKILL.md` 描述内置技能，包括项目自有指南和已核对来源的上游开发技能，见[技能目录](../skills/README.zh-CN.md)；`hub-backend/plugins/*.json` 提供通用插件与工作流。遵循[插件协议](plugin-authoring.md)保持版本不可变、权限最小化及导入审查。新增内置技能还需要显式更新 `tools/distribution/PUBLIC-SOURCE.json` 的发布范围，并保留原始许可和来源说明。

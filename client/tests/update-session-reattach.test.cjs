@@ -18,6 +18,7 @@ test('maintenance permits authenticated reattachment but blocks new and archived
   const context = vm.createContext({ app: { getPath: () => emptyStorage }, identityOf: async () => identity, sendIdentityOf: undefined,
     _cloudHandoff: { observe() {} }, _sharedHistory: null, _sessionOwners: null, _discardRenderer() {},
     require: name => {
+      if (name === '../agent-runtime/planning-scene.cjs') return require('../main/agent-runtime/planning-scene.cjs');
       if (['../work-preview', '../conversation/app-surfaces.cjs', './app-mcp-grant.cjs'].includes(name)) {
         return require(path.join(__dirname, '../main/pi-session', name));
       }

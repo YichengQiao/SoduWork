@@ -46,6 +46,45 @@
         "approval": "native-acp",
         "sandbox": false
       },
+      "id": "ai-planning",
+      "displayName": "Planning Harness",
+      "transport": "runner",
+      "executionLocations": [
+        "desktop"
+      ],
+      "modelMode": "managed",
+      "goalMode": "none",
+      "group": "recommended",
+      "order": 15,
+      "summary": "普通业务与本机定时任务使用的独立执行底座，由 SoduWork 提供企业模型与文件审批。",
+      "runner": {
+        "adapter": "acp",
+        "bins": [
+          "planning-harness"
+        ],
+        "args": [
+          "acp"
+        ]
+      },
+      "install": {
+        "installer": "bundled",
+        "source": "soduwork-planning-harness (Python wheel)",
+        "blurb": "Planning Harness 独立发布，使用 SoduWork 随包提供的本机 Python。",
+        "install_how": "请安装包含 Planning Harness 的 SoduWork 客户端。"
+      }
+    },
+    {
+      "accessControl": {
+        "schema": "soduwork.access-policy/v1",
+        "supported": true,
+        "modes": [
+          "standard",
+          "readonly",
+          "full"
+        ],
+        "approval": "native-acp",
+        "sandbox": false
+      },
       "id": "codex-harness",
       "displayName": "Codex Harness",
       "transport": "runner",

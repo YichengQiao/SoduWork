@@ -16,6 +16,7 @@ const skillRoots = require('../conversation/skill-roots');
 const skillTurn = require('./skill-turn');
 const sessionSpec = require('../conversation/session-spec');
 const updateWorkloads = require('../update-workloads');
+const planningScene = require('../agent-runtime/planning-scene.cjs');
 const usageReporter = require('../agent-runtime/usage-reporter');
 const artifactRuntime = require('../conversation/artifact-runtime');
 const { shell, dialog } = require('electron');
@@ -173,8 +174,10 @@ function _discardRenderer(handle) {
 function _bindUsage(handle, identity, adapterId) {
   if (!handle || !identity) return;
   require('./skill-failure-context.cjs').bind(_app, handle, identity);
-  _deliverySync?.bind(handle, identity);
-  _accountSync?.bind(handle, identity);
+  if (!planningScene.localOnly(handle)) {
+    _deliverySync?.bind(handle, identity);
+    _accountSync?.bind(handle, identity);
+  }
   handle.usageIdentity = {
     hub: String(identity.hub || ''),
     clientId: String(identity.clientId || ''),
@@ -236,7 +239,7 @@ function _push(BrowserWindow, handle, touched, snapshot) {
   const ref = handle.ref;
   const structural = !touched || touched.kind !== 'block';
   if (structural) {
-    _deliverySync?.observe(handle, touched, snapshot);
+    if (!planningScene.localOnly(handle)) _deliverySync?.observe(handle, touched, snapshot);
     if (_usage) _usage.observe(handle, snapshot);
     _streamTransport.push(ref, touched, snapshot, { BrowserWindow, handle });
     return;
@@ -369,6 +372,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
     app, identityOf: sendIdentityOf || identityOf, request: taskInput.request,
   });
   _usage = usageReporter.createUsageReporter({ app, identityOf, onQuotaExceeded });
+  require('../agent-runtime/planning-host.cjs').setUsageListener(_usage.recordPlanning);
   _usage.flush().catch(() => {});
   const pluginDebug = require('../personal-plugin-debug-ipc').install({
     app, ipcMain, session, identityOf: sendIdentityOf || identityOf, skillDirs: () => skillRoots.discover(app),
@@ -404,12 +408,18 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
   });
 
   async function openConversation(event, raw, expectedIdentity, automationContext) {
+    const planningScene = require('../agent-runtime/planning-scene.cjs');
     const preview = require('../work-preview');
     const appRequest = raw?.appRequestId ? preview.appRequestContext(event, raw.appRequestId) : null;
     const appPluginId = appRequest?.pluginId || preview.appContextFor(event?.sender)?.pluginId || '';
     const preferences = require('../access-control/preferences');
     const automationAccess = require('../access-control/automation-access');
     if (event && !preferences.isTrusted(event)) return { ok: false, reason: '请在 SoduWork 工作区中打开对话' };
+    let scene;
+    try {
+      scene = planningScene.forNew(app, raw || {});
+      if (scene) raw = { ...raw, adapterId: planningScene.adapter(scene) };
+    } catch (error) { return { ok: false, reason: error.message }; }
     const opts = automationAccess.apply(require('./task-access').withTaskAccessDefault(
       preferences.forNewChat(app, { ...(raw || {}) }, preferences.isTrusted(event))), automationContext);
     // Automation model selection is explicit in the schedule envelope. An
@@ -634,7 +644,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
             if (event) _attach(live, require('../conversation/app-surfaces.cjs').forSender(BrowserWindow, event.sender));
             else _detach(live);
             _wire(BrowserWindow, live);
-            _cloudHandoff.observe(live);
+            if (!planningScene.localOnly(live)) _cloudHandoff.observe(live);
             return _openReply(live, { resumed: true, attached: true, seeded: 0 });
           }
           } catch (error) {
@@ -726,6 +736,10 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
         delete opts.accessDraftId; delete opts.accessConsentId;
       }
       if (resume?.adapterId && !work.first) opts.adapterId = resume.adapterId;
+      if (resume && !work.first) {
+        scene = planningScene.restore(app, identity, resume.id || opts.chatId);
+        if (scene && opts.adapterId !== planningScene.adapter(scene)) throw Error('历史会话绑定与记录不一致');
+      }
       if (resume && (String(opts.adapterId || '').toLowerCase() === 'account-sync' ||
           resume.accountConversation === true || resume.accountProjection === true)) {
         return { ok: false, code: 'ACCOUNT_HISTORY_UNAVAILABLE',
@@ -756,7 +770,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
       const scratchRoot = path.resolve(workDir(app), 'temp');
       const memoryRelativeCwd = path.relative(scratchRoot, path.resolve(cwd));
       const scratchCwd = !memoryRelativeCwd || (!memoryRelativeCwd.startsWith('..' + path.sep) && memoryRelativeCwd !== '..' && !path.isAbsolute(memoryRelativeCwd));
-      const memoryOptions = { ...opts, cwd, workspaceExplicit: !scratchCwd, resumed: Boolean(resume) };
+      const memoryOptions = { ...opts, cwd, workspaceExplicit: !scratchCwd, resumed: Boolean(resume), localScene: Boolean(scene || opts.adapterId === 'ai-planning') };
       const memoryContextPromise = memories.context(identity, memoryOptions);
       // Start optional memory lookup alongside attachment/capability preparation.
       memoryContextPromise.catch(() => {});
@@ -807,7 +821,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
         resolveSkills: skillTurn.resolver({ app, identity, identityOf: sendIdentityOf || identityOf,
           skillDirs: () => _skillDirs(app),
           onResolved: (submissionId, items) => require('./skill-failure-context.cjs').prepared(session.get(ref), submissionId, items) }),
-        resolveConnectors: require('../conversation-connectors.cjs').resolver({ app, identity, identityOf: sendIdentityOf || identityOf,
+        resolveConnectors: opts.adapterId === 'ai-planning' ? undefined : require('../conversation-connectors.cjs').resolver({ app, identity, identityOf: sendIdentityOf || identityOf,
           ref, allowed: (resolved.skills || []).some(row => row.name === 'mcp-tools'), explicitlySelected: spec.selectedSkills.includes('mcp-tools') }),
         taskRef: spec.taskRef, taskTitle: spec.taskTitle,
         ...(resume?.title || opts.sessionTitle ? { sessionTitle: String(resume?.title || opts.sessionTitle).replace(/\s+/g, ' ').trim().slice(0, 240) } : {}),
@@ -827,6 +841,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
         maxSteps: spec.maxSteps,
         capabilityIds: spec.capabilityIds,
         resolvePlugins: async (pluginIds, projectId, turnContext) => {
+          if (opts.adapterId === 'ai-planning' && pluginIds.length) throw Error('此版本的 Planning 暂未接入 SoduWork 会话插件');
           if (automationPluginLock && pluginIds.includes(automationPluginLock.pluginId)) {
             const installed = automationPluginLock.pluginId.startsWith('local:')
               ? require('../personal-plugins').get(app, automationPluginLock.pluginId)
@@ -905,6 +920,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
           const ownerOptions = {};
           historyAccess.assertOwner(app, opts.chatId, historyActor, resume, ownerOptions);
         }
+        planningScene.bind(app, identity, opened.session, scene);
         await require('../conversation/acceptance-session').attach(app, opened.session,
           resume ? { resumed: true } : { ...opts, resumed: false }, identity);
         accessConsent?.assertValid();
@@ -926,7 +942,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
         if (event) _attach(opened.session, require('../conversation/app-surfaces.cjs').forSender(BrowserWindow, event.sender));
         else _detach(opened.session);
         _wire(BrowserWindow, opened.session);
-        _cloudHandoff.observe(opened.session);
+        if (!planningScene.localOnly(opened.session)) _cloudHandoff.observe(opened.session);
         appRequest?.assertActive();
         const reply = _openReply(opened.session, { resumed: !!resume, seeded: opened.seeded || 0 });
         accessConsent?.commit();
@@ -1057,7 +1073,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
     } catch (error) { return { ok: false, reason: String(error.message || error) }; }
     try {
       if (session.get(ref) !== s) throw Error('账号已切换，请重新打开会话');
-      if (_cloudHandoff.guard(s)) {
+      if (!planningScene.localOnly(s) && _cloudHandoff.guard(s)) {
         // An existing cloud conversation accepts follow-up text, not task
         // dispatch manifests. Do not drop a confirmed input selection.
         if (confirmedTaskInput) return { ok: false, accepted: false, notSent: true,

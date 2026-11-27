@@ -7,20 +7,44 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
 
 from ..agent_catalog import acp_specs
-from . import dsh_runtime
-from . import agent_npm_runtime
-
+from . import agent_npm_runtime, dsh_runtime
 
 CATALOG: dict[str, dict] = acp_specs()
 
 
+def planning_version(launcher) -> str:
+    try:
+        root = Path(launcher).parent
+        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+        version = manifest.get("version")
+        if (all(type(manifest.get(k)) is int and manifest[k] == 1
+                for k in ("schema", "protocolVersion", "hostExtensionVersion"))
+                and manifest.get("harnessId") == "ai-planning"
+                and manifest.get("distribution") == "soduwork-planning-harness"
+                and isinstance(version, str) and re.fullmatch(r"\d+(?:\.\d+)+(?:a\d+|b\d+|rc\d+)?(?:\.post\d+)?(?:\.dev\d+)?", version)
+                and (root / "site/planning_cli/__main__.py").is_file()
+                and (root / f"soduwork_planning_harness-{version}.dist-info" / "METADATA").is_file()):
+            return version
+    except (OSError, ValueError, AttributeError):
+        pass
+    return ""
+
+
 def find_bin(key: str) -> str | None:
     """Find an installed ACP agent without mistaking SoduWork itself for one."""
+    if key == 'ai-planning':
+        launcher = Path(os.environ.get("SODUWORK_PLANNING_LAUNCHER", ""))
+        python = Path(os.environ.get("SODUWORK_MANAGED_PYTHON", ""))
+        if (launcher.is_absolute() and launcher.is_file() and python.is_absolute()
+                and python.is_file() and planning_version(launcher)):
+            return str(launcher)
+        return None
     spec = CATALOG.get(key) or {}
     override = os.environ.get("SODUWORK_AGENT_%s_BIN" % key.upper().replace("-", "_"))
     if override:
@@ -96,6 +120,11 @@ def _agent_args(key: str, cfg: dict) -> list[str]:
 
 def executable_command(key: str, executable: str) -> list[str]:
     """Use one validated Node/entry pair for npm probes and actual ACP launches."""
+    if key == 'ai-planning':
+        launcher = find_bin(key)
+        if not launcher or executable != launcher:
+            raise RuntimeError('本机 Planning Harness 不可用，请更新桌面客户端')
+        return [os.environ["SODUWORK_MANAGED_PYTHON"], "-I", "-B", "-u", launcher]
     from .agent_installation import selected_node_entry
     spec = CATALOG.get(key) or {}
     entry, engine = selected_node_entry(spec.get('pkg', ''), executable)

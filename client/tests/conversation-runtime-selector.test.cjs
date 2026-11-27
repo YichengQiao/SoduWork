@@ -8,7 +8,7 @@ const {
   createRunnerRuntimeAdapter,
   _uuidV5,
 } = require('../main/agent-runtime/runner-adapter');
-const { RUNTIMES } = require('../main/agent-runtime/runtime-catalog');
+const { RUNTIMES, loadCatalog } = require('../main/agent-runtime/runtime-catalog');
 
 const adapter = createRunnerRuntimeAdapter();
 const descriptor = validateAdapter(adapter);
@@ -19,9 +19,14 @@ assert.ok(descriptor.capabilities.some((item) => item.id === CAPABILITIES.SESSIO
 assert.ok(descriptor.capabilities.some((item) => item.id === CAPABILITIES.TURN_QUEUE));
 assert.ok(descriptor.capabilities.some((item) => item.id === CAPABILITIES.MODEL_SELECT));
 assert.ok(descriptor.capabilities.some((item) => item.id === CAPABILITIES.GOAL_CONTROL));
-assert.deepEqual(RUNTIMES.map((item) => item.id), [
-  'pi', 'codex-harness', 'opencode', 'codex', 'qwen', 'dsh', 'kimi',
-]);
+const planning = loadCatalog().runtime('ai-planning');
+assert.equal(planning.displayName, 'Planning Harness');
+assert.equal(planning.transport, 'runner');
+const installedPlanning = require('node:fs').existsSync(
+  path.join(__dirname, '..', '.runtime', 'planning', 'manifest.json'));
+const selectableRuntimes = ['pi', 'codex-harness', 'opencode', 'codex', 'qwen', 'dsh', 'kimi'];
+if (installedPlanning) selectableRuntimes.splice(1, 0, planning.id);
+assert.deepEqual(RUNTIMES.map((item) => item.id), selectableRuntimes);
 RUNTIMES.filter((item) => item.transport === 'runner').forEach((runtimeSpec) => {
   const runner = validateAdapter(createRunnerRuntimeAdapter({ runtimeSpec }));
   assert.equal(runner.id, runtimeSpec.id);

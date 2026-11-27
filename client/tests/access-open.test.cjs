@@ -65,6 +65,7 @@ function fixture(options = {}) {
     _wire(...args) { return options.wire?.(...args); },
     _openReply: (...args) => options.openReply ? options.openReply(...args) : ({ ok: true }),
     require: name => {
+      if (name === '../agent-runtime/planning-scene.cjs') return require('../main/agent-runtime/planning-scene.cjs');
       if (name.startsWith('node:')) return require(name);
       if (name === './app-mcp-grant.cjs') {
         const actual = require(path.join(__dirname, '../main/pi-session', name));

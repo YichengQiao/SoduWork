@@ -21,6 +21,8 @@ function assertCloudModel(value) {
 function create({ app, root, read, save, identity, request, publicRecord }) {
   const pending = new Map();
   function options(input) {
+    if (input.agentId === 'ai-planning' || require('../managed-runtime.cjs').planningEnabled(app))
+      throw Error('当前场景仅支持在本机运行');
     if (!/^[a-f0-9-]{36}$/i.test(input.requestId || '')) throw Error('云端请求标识无效');
     if (!/^[a-z][a-z0-9._-]{0,47}$/.test(input.agentId || '')) throw Error('请选择执行底座');
     assertCloudModel(input.model);

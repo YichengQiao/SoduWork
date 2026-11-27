@@ -347,7 +347,7 @@
     const task = (async () => {
       try {
         const result = await _awaitCapability(api.capabilities({ force: force === true,
-          adapterId: global.ComposeRuntime?.value?.() || 'pi', modelName: _pickedModel,
+          adapterId: global.ComposeRuntime?.value?.() || 'pi', ...(global.ComposeRuntime?.scene?.() ? { planningScene: global.ComposeRuntime.scene() } : {}), modelName: _pickedModel,
           executionLocation: global.ComposeExecution?.value?.() || 'local' }));
         if (requestEpoch !== _capabilityEpoch) return;
         if (!result || result.ok === false) {
@@ -562,6 +562,7 @@
     const accepted = global.NativeChat ? await NativeChat.enter(text || '', chatId || '', Object.assign({
       adapterId,
       modelName: modelSelection.modelName,
+      ...(global.ComposeRuntime?.scene?.() ? { planningScene: global.ComposeRuntime.scene() } : {}),
       reasoningEffort: modelSelection.reasoningEffort,
       thinkingLevel: modelSelection.thinkingLevel || '',
       capabilities: [..._pickedCapabilities],
@@ -625,7 +626,7 @@
         const model = global.ComposeModelPicker?.value?.() || { modelName: _pickedModel };
         const accessSupported = global.ComposeRuntime?.accessSupported?.();
         return {
-          adapterId: global.ComposeRuntime?.value?.() || 'pi', ...model,
+          adapterId: global.ComposeRuntime?.value?.() || 'pi', ...(global.ComposeRuntime?.scene?.() ? { planningScene: global.ComposeRuntime.scene() } : {}), ...model,
           modelLabel: global.ComposeModelPicker?.label?.() || model.modelName || '',
           cwd: _workspace.direct ? _workspace.dir : '', workspaceLabel: _workspace.name,
           projectId: _workspace.projectId || '', repoId: _workspace.repoId || '',
@@ -714,7 +715,7 @@
         if (!currentWorkEntry()) return false;
         if (ready === false) { global.petSay?.('默认模型暂不可用，请选择其他模型'); return false; }
         const selection = global.ComposeModelPicker?.value?.() || { modelName: _pickedModel };
-        return { adapterId: submitAdapter, modelName: selection.modelName || '',
+        return { adapterId: submitAdapter, ...(global.ComposeRuntime?.scene?.() ? { planningScene: global.ComposeRuntime.scene() } : {}), modelName: selection.modelName || '',
           modelLabel: global.ComposeModelPicker?.label?.() || selection.modelName || '',
           reasoningEffort: selection.reasoningEffort || '', thinkingLevel: selection.thinkingLevel || '' };
       },
@@ -870,7 +871,7 @@
       const accessMode = global.AccessPreferences?.snapshot?.().mode === 'readonly' ? 'readonly' : 'standard';
       return NativeChat.enter('', '', {
         cwd: q.fileOpen.cwd || '', workspaceLabel: q.fileOpen.workspaceLabel || (q.fileOpen.cwd ? '文件所在位置' : '临时工作区'),
-        adapterId: global.ComposeRuntime?.value?.() || 'pi',
+        adapterId: global.ComposeRuntime?.value?.() || 'pi', ...(global.ComposeRuntime?.scene?.() ? { planningScene: global.ComposeRuntime.scene() } : {}),
         mode: accessMode === 'readonly' ? 'readonly' : 'full', accessMode,
         inputFiles: [q.fileOpen.file], previewInput: q.fileOpen.preview ? q.fileOpen.file : null,
         inputTitle: q.fileOpen.title,

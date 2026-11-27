@@ -82,6 +82,7 @@ function fixture(t, { nativeHistory = false, nativeOutputs = false } = {}) {
     if (op === 'job.dispatch') {
       const ref = _uuidV5('9af442c8-cd1d-4b91-a668-22da2b2635bf', input.dispatchId || 'chat:' + input.task.id + ':' + input.cli);
       runs.set(ref, { ref, cli: input.cli, taskId: input.task.id, workDir: input.ctx.workDir, state: 'done', title: input.task.title,
+        accessPolicy: input.ctx.accessPolicy,
         items: [{ seq: 1, kind: 'user', text: input.ctx.conversationUserText },
           { seq: 2, kind: 'say', text: 'Reply ' + input.cli }] });
       return { ok: true, data: { ref } };
@@ -89,7 +90,8 @@ function fixture(t, { nativeHistory = false, nativeOutputs = false } = {}) {
     if (op === 'job.comment') { const run = runs.get(input.ref); run.items.push({ seq: run.items.length+1, kind: 'say', text: 'Followup' }); return { ok: true, data: { ok: true } }; }
     if (op === 'job.session') { const run = runs.get(input.ref);
       if (!run && strictMissing) return { ok: true, data: { ok: false, error: 'Native session does not exist' } };
-      return { ok: true, data: { status: 'done', round: 1, items: (run?.items || []).filter(x => x.seq > (input.since || 0)) } }; }
+      return { ok: true, data: { status: 'done', round: 1, accessPolicy: run?.accessPolicy,
+        items: (run?.items || []).filter(x => x.seq > (input.since || 0)) } }; }
     if (op === 'job.has') { if (absence instanceof Error) throw absence; return { ok: true, data: { ...absence } }; }
     if (op === 'runtime.sessions') return { ok: true, data: { runs: [...runs.values()] } };
     if (op === 'runtime.session.forget') { runs.delete(input.ref); return { ok: true, data: { ok: true } }; }
@@ -99,7 +101,8 @@ function fixture(t, { nativeHistory = false, nativeOutputs = false } = {}) {
   function bridge() { return createPiSessionBridge({ app, sessionModule: engine, runnerAdapters: catalog.runnerRuntimes().map(spec => createRunnerRuntimeAdapter({
     app, runtimeSpec: spec, runnerRuntime: runtime,
     modelConfig: { fetchModel: async (_id, name) => name === 'denied' ? { ok: false, reason: 'unauthorized model' } :
-      { ok: true, model: { id: name || 'model-a', name: name || 'model-a', key: 'fixture-secret', baseUrl: 'http://fixture.invalid' } } },
+      { ok: true, model: { id: name || 'model-a', name: name || 'model-a', key: 'fixture-secret',
+        baseUrl: spec.id === 'ai-planning' ? identity('alice').hub : 'http://fixture.invalid' } } },
   })) }); }
   let current = bridge();
   t.after(async () => { await current.dispose(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }); });
@@ -454,21 +457,57 @@ async function waitIdle(handle) {
 
 for (const spec of catalog.runnerRuntimes()) test(spec.id + ': controlled receipts survive restart without claiming native admission', async t => {
   const f = fixture(t); f.strictMissing = true;
-  const handle = (await f.bridge.open(options(f))).session;
-  await send(handle, 'Requirement draft');
-  assert.equal((await handle.selectAgent(spec.id)).ok, true);
+  const pi = (await f.bridge.open(options(f))).session;
+  await send(pi, 'Requirement draft');
+  const selected = await pi.selectAgent(spec.id);
+  const planning = spec.id === 'ai-planning';
+  const scenes = require('../main/agent-runtime/planning-scene.cjs');
+  const actor = options(f).identity;
+  let handle = pi;
+  if (planning) {
+    assert.equal(selected.ok, false);
+    assert.match(selected.reason, /执行者已绑定/);
+    assert.equal(pi.adapterId, 'pi');
+    assert.equal(f.requests.filter(row => row.op === 'job.dispatch').length, 0);
+    t.mock.method(require('../main/conversation/requirement-context'), 'cachedIdentity', () => actor);
+    const business = await f.bridge.open({ ...options(f), identity: actor, ref: 'business-review', adapterId: scenes.adapter('business') });
+    assert.equal(business.ok, true, business.reason);
+    handle = business.session;
+    scenes.bind(f.app, actor, handle, 'business');
+    assert.equal(scenes.localOnly(handle), true);
+    assert.equal(scenes.restore(f.app, identity('bob'), handle.sessionId), '');
+    assert.equal((await handle.selectAgent('pi')).ok, false);
+    assert.equal(handle.adapterId, spec.id);
+  } else {
+    assert.equal(selected.ok, true);
+  }
   const id = handle.sessionId;
   assert.equal(handle.bindTask('requirement', 'Existing requirement').ok, true);
   handle.appendTaskMessage('user', 'Execute the requirement', [], 'requirement', 'request');
   handle.appendTaskMessage('assistant', 'Completed delivery', [], 'requirement', 'result');
   handle.taskExecutionChanged({ taskId: 'requirement', status: 'completed' });
   await segments.flush(f.app, id);
-  const active = segments.read(f.app, id).active;
+  const receipt = handle.historyRow();
+  const active = planning ? { sessionId: receipt.id, started: receipt.nativeSessionStarted } : segments.read(f.app, id).active;
   assert.equal(active.started, false, 'task output is not a native dispatch acknowledgement');
+  const resume = (ref, started) => {
+    if (!planning) return f.bridge.open({ ...options(f), ref, runtimeConversationId: id });
+    const scene = scenes.restore(f.app, actor, id);
+    assert.equal(scene, 'business');
+    return f.bridge.open({ ...options(f), identity: actor, ref, adapterId: scenes.adapter(scene),
+      resumePath: id, nativeDispatchId: receipt.nativeDispatchId, nativeSessionStarted: started });
+  };
   await f.restart();
-  const reopened = await f.bridge.open({ ...options(f), ref: 'review-reopen', runtimeConversationId: id });
+  const reopened = await resume('review-reopen', false);
   assert.equal(reopened.ok, true, reopened.reason);
   await waitIdle(reopened.session);
+  if (planning) {
+    scenes.bind(f.app, actor, reopened.session, scenes.restore(f.app, actor, id));
+    const controlled = { execute: () => assert.fail('restored local sessions cannot invoke remote execution') };
+    const blocked = reopened.session.submit('Move to remote executor', [], { controlled });
+    assert.equal(blocked.accepted, false);
+    assert.match(blocked.result.reason, /本机/);
+  }
   assert.match(JSON.stringify(reopened.session.snapshot().messages), /Completed delivery/);
   assert.equal(f.requests.filter(row => row.op === 'job.dispatch').length, 0);
   const task = { id: 'requirement', title: 'Existing requirement', ownerClientId: 'test-device',
@@ -492,12 +531,17 @@ for (const spec of catalog.runnerRuntimes()) test(spec.id + ': controlled receip
   assert.doesNotMatch(starts[0].input.ctx.conversationUserText, /delivery-v1/);
   assert.ok(f.runs.has(active.sessionId), 'first dispatch retains the segment and its task-output journal');
   await f.restart();
-  const again = await f.bridge.open({ ...options(f), ref: 'review-again', runtimeConversationId: id });
+  const again = await resume('review-again', true);
   assert.equal(again.ok, true, again.reason);
   await waitIdle(again.session);
   await send(again.session, 'One explicit follow-up');
   assert.equal(f.requests.filter(row => row.op === 'job.dispatch').length, 1);
-  assert.equal(f.requests.filter(row => row.op === 'job.comment').length, 1);
+  const comments = f.requests.filter(row => row.op === 'job.comment');
+  assert.equal(comments.length, 1);
+  if (planning) {
+    assert.deepEqual(comments[0].input.cfg.accessPolicy, starts[0].input.ctx.accessPolicy);
+    assert.notEqual(comments[0].input.cfg.planningHostGrant, starts[0].input.cfg.planningHostGrant);
+  }
   allowed = false;
   const refused = again.session.submit(review.displayText, [], { beforeTurn: review.beforeTurn, promptText: review.text });
   assert.equal((await refused.completion).ok, false);

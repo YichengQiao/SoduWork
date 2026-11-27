@@ -92,6 +92,7 @@ function fixture(t, options = {}) {
       _bindUsage() {}, _attach() {}, _detach() {}, _discardRenderer() {}, _wire() {},
       _openReply: (handle, extra) => ({ ok: true, ...extra, sessionId: handle.sessionId, snapshot: handle.snapshot() }),
       require: name => {
+      if (name === '../agent-runtime/planning-scene.cjs') return require('../main/agent-runtime/planning-scene.cjs');
         if (name.startsWith('node:')) return require(name);
         const actual = require(path.join(__dirname, '../main/pi-session', name));
         if (name === '../conversation/history-access') return { ...actual,

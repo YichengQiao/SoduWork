@@ -9,5 +9,6 @@ async function prepare(context) {
   if (!arch) throw Error('Unsupported client runtime architecture: ' + context.arch);
   await require('./prepare-node-runtime.cjs').prepare({ root, platform, arch });
   await require('./prepare-python-runtime.cjs').prepare({ root, platform, arch });
+  require('./prepare-planning.cjs').prepare({ root, platform, arch });
 }
 module.exports = prepare;

@@ -4,20 +4,22 @@ Every automation occurrence is represented by its conversation and run receipt;
 it never creates a Task or requirement record.
 """
 from datetime import datetime, timezone
-from sqlalchemy import select
+
 from fastapi import HTTPException
+from sqlalchemy import select
+
 from .. import models
-from ..agent_catalog import AGENTS
+from ..agent_catalog import AGENTS, desktop_only
 from . import schedule_access
 from .schedule_execution import required_skill_names
 from .schedule_run_contracts import (
     automation_conversation_title,
-    clean_schedule_model_reference,
-    schedule_model_source,
-    sanitize_schedule_model_payload,
     clean_required_capabilities,
+    clean_schedule_model_reference,
     is_local_model_reference,
     personal_plugin_spec,
+    sanitize_schedule_model_payload,
+    schedule_model_source,
 )
 
 PROTOCOL = 'soduwork.automation-conversation/v1'
@@ -55,6 +57,8 @@ def adapter_for(schedule, client):
         if len(parts) != 3:
             return ''
         _, runner_id, cli = parts
+        if desktop_only(cli):
+            return ''
         runner = runner_hub.get(runner_id)
         owner = str(getattr(client, "user_ref", "") or "")
         if (runner is None or

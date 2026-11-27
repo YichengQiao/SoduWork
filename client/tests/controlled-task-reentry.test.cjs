@@ -15,7 +15,9 @@ async function until(check) {
   throw Error('Fixture did not reach the expected boundary');
 }
 
-for (const { id } of catalog.runtimes()) test(id + ': delegated turn survives view switching and reconnects without dispatch replay',
+for (const { id } of catalog.runtimes()) test(id + (id === 'ai-planning'
+  ? ': local Planning rejects delegated execution before queue admission'
+  : ': delegated turn survives view switching and reconnects without dispatch replay'),
   { timeout: 30000 }, async t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-controlled-reentry-'));
     const clock = Date.now;
@@ -36,7 +38,13 @@ for (const { id } of catalog.runtimes()) test(id + ': delegated turn survives vi
       const adapter = createRunnerRuntimeAdapter({ runtimeSpec: catalog.runtime(id),
         app: { getPath: () => root },
         modelConfig: { fetchModel: async () => ({ ok: true, model: { id: 'fixture', key: 'fixture' } }) },
-        runnerRuntime: { async rpc() { return { ok: true, data: {} }; } } });
+        runnerRuntime: { async rpc(op, input) {
+          if (id === 'ai-planning' && op === 'runtime.detect') {
+            assert.equal(input.key, id);
+            return { ok: true, data: { accessControl: catalog.runtime(id).accessControl } };
+          }
+          return { ok: true, data: {} };
+        } } });
       nativeSession = await adapter.createSession({ native: { runner: { openOptions: { cwd: root } } } });
       handle = getRunnerSessionDetails(nativeSession).handle;
     }
@@ -52,6 +60,14 @@ for (const { id } of catalog.runtimes()) test(id + ': delegated turn survives vi
           seq: 0, items: [] };
       } });
     const sent = handle.submit('Isolated delegated requirement', [], { taskId: 'isolated-task', controlled: controller });
+    if (id === 'ai-planning') {
+      assert.equal(sent.accepted, false);
+      assert.match(sent.result.reason, /本机/);
+      assert.equal((await sent.completion).ok, false);
+      assert.equal(handle.inFlight(), false);
+      assert.equal(reads, 0); assert.equal(dispatches, 0);
+      return;
+    }
     assert.equal(sent.accepted, true); completed = sent.completion;
     await until(() => reads === 1 && release);
     // A stale composer timestamp must not override an admitted executor clock.
@@ -104,4 +120,31 @@ test('actual user approval overrides an occupied queue and never displays a thin
   const view = status.createThinking(() => ({ ref: 'approval', snap }));
   assert.match(view.statusHtml(false), /等待输入/);
   assert.doesNotMatch(view.statusHtml(false), /正在理解|ndot/);
+});
+
+test('bound Coding rejects controlled jobs on open and after restore while local Pi can still send', async t => {
+  const scenes = require('../main/agent-runtime/planning-scene.cjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-controlled-coding-'));
+  const app = { getPath: () => root }, now = Math.floor(Date.now() / 1000);
+  const identity = { hub: 'http://fixture.invalid', clientId: 'device', session:
+    Buffer.from(JSON.stringify({ typ: 'device', uid: 'owner', cid: 'device', iat: now, exp: now + 600 }))
+      .toString('base64url') + '.' + 'a'.repeat(64) };
+  const fixture = await require('../e2e/fixtures/resumed-pi.cjs').create(root);
+  t.after(async () => { await fixture.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  let handle = await fixture.open(), calls = 0;
+  const delegated = { controlled: { execute: async () => { calls++; return { ok: true }; } } };
+  for (const restored of [false, true]) {
+    scenes.bind(app, identity, handle, restored ? scenes.restore(app, identity, handle.sessionId) : 'coding');
+    const sent = handle.submit('Delegate', [], delegated);
+    assert.equal(sent.accepted, false);
+    assert.match(sent.result.reason, /本机/);
+    assert.equal((await handle.send('Delegate', [], delegated)).ok, false);
+    assert.equal(calls, 0);
+    if (!restored) { handle.close(); handle = await fixture.open(); }
+  }
+  fixture.reply(() => ({ text: 'Local Coding result' }));
+  const sent = handle.submit('Answer using the local session', [], {});
+  assert.equal(sent.accepted, true);
+  assert.equal((await sent.completion).ok, true);
+  assert.equal(fixture.requests.length, 1);
 });

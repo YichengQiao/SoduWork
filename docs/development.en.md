@@ -87,6 +87,12 @@ An independently started source client defaults to `http://127.0.0.1:18989` when
 
 Run `npm test` and `npm run check:layout` in `client/`. Electron end-to-end checks live in `e2e/`; inspect each script's environment requirements. `dist/`, `.runtime/`, and generated `runner/` files are build outputs. Do not commit them or substitute old release binaries for current source.
 
+### Optional local Planning Harness
+
+To test an integrated desktop, obtain the approved `soduwork-planning-harness` wheel, its independently recorded SHA-256, and a directory containing the locked dependency wheels for the target platform. Set `SODUWORK_PLANNING_WHEEL` and `SODUWORK_PLANNING_WHEELHOUSE` to their absolute paths and `SODUWORK_PLANNING_SHA256` to the approved digest. In `client/`, run `node scripts/prepare-planning.cjs --development`, then `npm start`. The same three build inputs enable the harness in a packaged desktop.
+
+Open a business conversation to use Planning through the local Runner over ACP stdio. Open a Coding conversation to use local Pi. The desktop handles model API requests and prompts for approval before Planning writes to the workspace. End users receive the runtime with the integrated application.
+
 ## Skills and plugins
 
 Bundled skills live at `skills/<name>/SKILL.md`; see the [skill catalog](../skills/README.md) for project-owned guides and reviewed upstream development skills. Generic plugins and workflows live in `hub-backend/plugins/*.json`. Follow the [plugin protocol](plugin-authoring.en.md) for immutable versions, minimal permissions, and import review. Adding a bundled skill also requires explicitly updating the release scope in `tools/distribution/PUBLIC-SOURCE.json` and retaining its original license and provenance.

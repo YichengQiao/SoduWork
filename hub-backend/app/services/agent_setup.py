@@ -212,6 +212,8 @@ def _bin_of(key: str) -> str:
 
 def is_bundled(key: str) -> bool:
     """Whether this agent is shipped and lifecycle-managed by SoduWork."""
+    if key == "ai-planning":
+        return bool(_bin_of(key))
     if key == "pi":
         return bool(_bundled_pi_cli_js() and _bundled_pi_node())
     return False
@@ -223,6 +225,9 @@ def _version_of(key: str) -> tuple[str, str, str]:
     """
     binp = _bin_of(key)
     spec = _SPECS.get(key) or {}
+    if key == "ai-planning":
+        from .acp_agents import planning_version
+        return (planning_version(binp), "bundled", "") if binp else ("", "", "")
     if spec.get("installer") == "managed":
         if key == "opencode" and (issue := managed_agents._cpu_compatibility_issue()):
             return managed_agents._read_active(), "managed-record", issue
@@ -570,8 +575,8 @@ def _stream(jid: str, argv: list[str], *, cwd: str | None = None, env: dict | No
 
 # ---- Install / uninstall / update ----
 def can_uninstall(key: str) -> bool:
-    """Pi is required even when its bundled payload is absent or being repaired."""
-    return key in _SPECS and key != "pi" and not is_bundled(key)
+    """Bundled runtimes are repaired and removed with their desktop distribution."""
+    return key in _SPECS and key != "pi" and _SPECS[key].get("installer") != "bundled" and not is_bundled(key)
 
 
 def start_install(key: str, action: str, *, owner_id: str = "") -> str:
@@ -608,7 +613,7 @@ def start_install(key: str, action: str, *, owner_id: str = "") -> str:
                   "无需单独安装，升级 SoduWork 时会一起升级。")
         return jid
     spec = _SPECS.get(key) or {}
-    if spec.get("installer") == "manual":
+    if spec.get("installer") in {"bundled", "manual"}:
         _done(jid, False, str(spec.get("install_how") or
                               "Install this Agent in an isolated Runner environment, then retry detection."))
         return jid

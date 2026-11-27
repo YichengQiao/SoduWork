@@ -2,15 +2,15 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import json
+import logging
 import threading
 import time
 import uuid
 
+from ..agent_catalog import AGENTS, desktop_only
 from . import execution_capabilities
 from .runner_identity_error import RunnerIdentityConflict
-from ..agent_catalog import AGENTS
 
 log = logging.getLogger("uvicorn.error")
 
@@ -77,6 +77,8 @@ def clean_agent_inventory(value) -> list[dict]:
             continue
         key = str(row.get("key") or row.get("id") or "").strip()
         base = key.split(":", 1)[-1].strip()
+        if desktop_only(base):
+            continue
         if base not in active and not base.startswith("custom-"):
             continue
         result.append(row)

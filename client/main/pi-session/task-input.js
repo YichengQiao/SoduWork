@@ -2,6 +2,7 @@
 const { createHash } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
 const { taskPrompt } = require('./task-turn');
+const scenes = require('../agent-runtime/planning-scene.cjs');
 const { MAX_BYTES, MAX_FILES } = require('./attachments');
 const { fetchWithDeviceAuthRetry } = require('../device-auth-request');
 
@@ -187,6 +188,17 @@ async function prepare(identity, taskId, conversationId, turnId, instruction, re
     const error = new Error('需求已经结束'); error.code = 'TASK_FINISHED'; throw error;
   }
   let spec = controlled.executionSpec(task, requested);
+  const deviceBound = scenes.localOnly(runtime?.handle);
+  const ownerScope = require('../conversation/runtime-segments').scope;
+  const sessionOwner = deviceBound ? { hub: identity.hub, clientId: identity.clientId, account: ownerScope(identity) } : null;
+  const assertLocalOwner = current => {
+    if (!sessionOwner) return;
+    const owner = ownerScope(current);
+    if (current.hub !== sessionOwner.hub || current.clientId !== sessionOwner.clientId || owner !== sessionOwner.account ||
+        runtime.handle.usageIdentity?.accountScope && runtime.handle.usageIdentity.accountScope !== owner ||
+        runtime.handle.planningScene && scenes.restore(runtime.app, current, conversationId) !== runtime.handle.planningScene)
+      throw Error('当前账号或设备与本机场景归属不一致，请重新打开原会话');
+  };
   const reuse = requested.reuseConversation === true;
   const reworkSession = requested.reworkSession === true;
   const explicitNative = requested.executionChoice === 'native';
@@ -220,7 +232,7 @@ async function prepare(identity, taskId, conversationId, turnId, instruction, re
   // follow-up turns flow back to the task. Otherwise a later correction, such as changing the output
   // format to Markdown, can leave its files in the workspace without registering task deliverables.
   const followUp = reuse && !explicitNative && requested.followUp === true;
-  const runnerContinuation = reuse && !explicitNative && (followUp || reworkSession) &&
+  const runnerContinuation = !deviceBound && reuse && !explicitNative && (followUp || reworkSession) &&
     spec.mode === 'dispatch' && (/^runner:/.test(spec.agentId) ||
       task.workRouting?.conversationTurn?.executor === 'dispatch');
   const previous = task.workRouting?.conversationTurn;
@@ -247,7 +259,8 @@ async function prepare(identity, taskId, conversationId, turnId, instruction, re
     if (runtime.identityOf) identity = await runtime.identityOf();
     const context = require('../conversation/requirement-context');
     context.assertOwner(runtime.app, runtime.handle, identity);
-    if (quick) return;
+    assertLocalOwner(identity);
+    if (quick && !deviceBound) return;
     const fresh = refresh ? await request(identity, route) : task;
     const receipt = fresh.workRouting?.conversationTurn || {};
     // Recover only this send's persisted queue entry after an uncertain prepare response; unrelated execution is not a retry.
@@ -262,7 +275,7 @@ async function prepare(identity, taskId, conversationId, turnId, instruction, re
     await context.validate({ ...runtime, identity }, fresh, checked,
       controlled.executionSpec(fresh, checked), route => request(identity, route));
   };
-  if (reuse || explicitNative) {
+  if (deviceBound || reuse || explicitNative) {
     await verifyReuse(false, followUp || runnerContinuation);
     if (runnerContinuation) {
       // Keep the original executor and workspace. A local transcript is not a
@@ -270,7 +283,10 @@ async function prepare(identity, taskId, conversationId, turnId, instruction, re
       const page = await request(identity, route + '/ai-session?since=1000000000');
       if (!page.ref || page.canSend === false) throw Error(page.readOnlyReason || '原执行会话不可继续，请刷新需求后重试');
       spec = { ...spec, continuationRef: String(page.ref) };
-    } else spec = { ...spec, mode: 'native' };
+    } else {
+      spec = { ...spec, mode: 'native' };
+      if (deviceBound) capturedModel = captureModelSource();
+    }
   }
   // When manually restarting rejected work, include the review feedback in the new turn.
   // Preserve the original feedback rather than relying on a short generic rework request.
@@ -304,8 +320,10 @@ async function prepare(identity, taskId, conversationId, turnId, instruction, re
   // the last known identity rather than sending a doomed stale token.
   const freshIdentity = async () => {
     if (runtime?.identityOf) {
-      try { identity = await runtime.identityOf(); } catch (_) { /* keep last identity */ }
+      try { identity = await runtime.identityOf(); }
+      catch (error) { if (deviceBound) throw error; }
     }
+    assertLocalOwner(identity);
     return identity;
   };
   const transition = action => freshIdentity()
@@ -415,7 +433,7 @@ async function prepare(identity, taskId, conversationId, turnId, instruction, re
     beforeTurn: async () => {
       // Queued work must not execute with stale account/project/repository data.
       try {
-        if (!releaseRecovery && (reuse || explicitNative)) await verifyReuse(true, followUp || runnerContinuation);
+        if (deviceBound || !releaseRecovery && (reuse || explicitNative)) await verifyReuse(true, followUp || runnerContinuation);
         if (releaseRecovery) {
           const current = await request(await freshIdentity(), route);
           const turn = current.workRouting?.conversationTurn;
@@ -438,6 +456,7 @@ async function prepare(identity, taskId, conversationId, turnId, instruction, re
       if (confirmedRecovery) throw new Error('请重新预览需求附件后安排新的执行轮次');
       // Mint a fresh receipt attempt, but retain this conversation's context.
       // Queue admission freezes a model independently of later picker changes.
+      if (deviceBound) await verifyReuse(true);
       const nextModel = captureModelSource(true, turn?.modelName);
       const next = { conversationId: scope.conversationId, turnId: 'recovery-' + require('node:crypto').randomUUID() };
       const receipt = await request(await freshIdentity(), route + '/conversation-turn',

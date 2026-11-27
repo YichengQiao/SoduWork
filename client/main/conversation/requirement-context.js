@@ -139,8 +139,15 @@ async function repository(task, spec, runtime, request) {
     throw Error('当前会话不在这项需求的工程目录，请打开对应工程会话');
   return wanted;
 }
-function nativeOnly(task, requested, spec, handle) {
+function nativeOnly(task, requested, spec, handle, identity) {
   const reselect = requested.executionChoice === 'native';
+  const deviceBound = require('../agent-runtime/planning-scene.cjs').localOnly(handle);
+  const previousExecutor = task.workRouting?.conversationTurn?.executor;
+  const previousStrategy = task.workRouting?.selectedStrategy;
+  if (deviceBound && !reselect && previousStrategy && previousStrategy !== 'direct')
+    throw Error('需求指定了其他执行方式，请重新选择本机执行');
+  if (deviceBound && !reselect && previousExecutor && previousExecutor !== 'native')
+    throw Error('原需求使用了其他执行端，请从原执行记录继续或重新选择本机执行');
   if (reselect) {
     const idle = new Set(['', 'failed', 'cancelled', 'canceled', 'stopped', 'interrupted']);
     const receipt = task.workRouting?.conversationTurn || {}, ai = task.ai || {};
@@ -154,6 +161,12 @@ function nativeOnly(task, requested, spec, handle) {
   // Explicit changes replace only unexecuted methods; final preparation still atomically verifies active ownership with Hub.
   for (const value of reselect ? [spec] : [require('../pi-session/controlled-task-turn').executionSpec(task), spec]) {
     const context = value.context || {}, runner = context.runner || {};
+    const assigned = String(value.agentId || '').replace(/^local:/, '');
+    if (deviceBound && (assigned && assigned !== handle.adapterId || value.assigneeType !== 'agent' ||
+        context.strategy && context.strategy !== 'direct' || runner.mode && runner.mode !== 'local' ||
+        runner.id || runner.runnerId || runner.host || runner.clientId && runner.clientId !== identity.clientId ||
+        context.location?.mode && context.location.mode !== 'local'))
+      throw Error('无法确认需求使用当前本机执行端，请重新选择本机执行');
     if (value.mode === 'workflow' || value.assigneeType === 'squad' ||
         /^runner:/.test(String(value.agentId || '')) || runner.mode === 'remote' || runner.remote === true ||
         context.location?.mode === 'remote')
@@ -188,7 +201,7 @@ async function validate({ app, handle, identity, workRoot, identityOf }, task, r
   if (!handle?.sessionId || !app) throw Error('无法确认原会话，请重新打开后再安排需求');
   const owner = identityMatches(handle, identity);
   accessible(task, identity, true);
-  nativeOnly(task, requested, spec, handle);
+  nativeOnly(task, requested, spec, handle, identity);
   const wanted = await repository(task, spec, { handle, workRoot }, request);
   const current = assertOwner(app, handle, identity);
   if (current) same(current, wanted);

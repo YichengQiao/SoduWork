@@ -25,6 +25,7 @@
   let catalog = FALLBACK.filter((row) => row.id === 'pi');
   let missingCatalog = [];
   let current = 'pi';
+  let enterprisePlanning = false;
   let location = 'local';
   // Keep the last choice for each execution location. A local account Agent
   // must not silently become the cloud choice (and vice versa) when the user
@@ -55,7 +56,7 @@
     const owner = ownerScope();
     if (owner === activeOwner) return false;
     activeOwner = owner; probeGeneration++; selectionGeneration++;
-    current = 'pi'; selectedByLocation.local = 'pi'; selectedByLocation.cloud = 'pi';
+    current = enterprisePlanning ? 'ai-planning' : 'pi'; selectedByLocation.local = current; selectedByLocation.cloud = 'pi';
     catalogGeneration++; catalogLoaded = false; loadPromise = null;
     for (const key of Object.keys(probes)) delete probes[key];
     pendingProbes.clear(); accessProbePromise = null; cloudSelectionPromise = null;
@@ -229,11 +230,11 @@
       button.setAttribute('aria-label', (location === 'cloud' ? _rtText('本次会话云端 Harness：') : _rtText('本次会话执行底座：')) + selected.displayName);
     }
     const label = scope.querySelector('#cpRuntime .wc-context-copy > i');
-    if (label) label.textContent = location === 'cloud' ? _rtText('云端底座') : _rtText('执行底座');
+    if (label) label.textContent = enterprisePlanning ? _rtText('场景') : location === 'cloud' ? _rtText('云端底座') : _rtText('执行底座');
     const heading = scope.querySelector('#cpRuntimePop .cp-runtime-heading b');
     const popup = scope.querySelector('#cpRuntimePop');
     if (popup) popup.classList.toggle('is-cloud', location === 'cloud');
-    if (heading) heading.textContent = location === 'cloud' ? _rtText('选择云端 Harness') : _rtText('选择执行底座');
+    if (heading) heading.textContent = enterprisePlanning ? _rtText('选择本机场景') : location === 'cloud' ? _rtText('选择云端 Harness') : _rtText('选择执行底座');
     const subheading = scope.querySelector('#cpRuntimePop .cp-runtime-heading small');
     if (subheading) subheading.textContent = location === 'cloud'
       ? _rtText('显示当前云端电脑的安装状态，可切换可用底座')
@@ -314,6 +315,22 @@
       syncOwner();
       if (generation !== catalogGeneration) return catalog;
       const declared = normalize(reply && reply.runtimes);
+      if (enterprisePlanning || reply?.enterprisePlanning === true) {
+        const previouslyEnabled = enterprisePlanning;
+        enterprisePlanning = true;
+        const entries = [...(reply?.availableRuntimes || []), ...(reply?.missing || []), ...declared];
+        const scenarios = [['ai-planning', '普通业务 · Planning Harness'], ['pi', 'Coding · Pi']];
+        catalog = normalize(scenarios.map(([id, displayName], order) => {
+          const entry = entries.find(row => row.id === id);
+          return { ...entry, id, order, displayName, group: 'recommended',
+            summary: id === 'pi' ? '在本机编写和修改代码' : '在本机使用公司 Planning 处理业务任务' };
+        }));
+        missingCatalog = []; catalogLoaded = reply?.ok === true;
+        if (location !== 'local') global.ComposeRuntime.setLocation('local');
+        if (!previouslyEnabled || !catalog.some(row => row.id === current)) selectCurrent('ai-planning');
+        renderRows(options.root); paint(options.root); options.refresh();
+        return catalog;
+      }
       let loaded = normalize(reply && Array.isArray(reply.availableRuntimes)
         ? reply.availableRuntimes
         : declared.filter((row) => row.id === 'pi'));
@@ -353,7 +370,7 @@
       return catalog;
     });
     const job = bounded(request).catch(() => {
-      if (generation === catalogGeneration) {
+      if (generation === catalogGeneration && !enterprisePlanning) {
         catalog = FALLBACK.filter((row) => row.id === 'pi');
         missingCatalog = fallbackMissing();
         catalogLoaded = false;
@@ -367,7 +384,7 @@
   }
 
   function demoteUnavailableLocal(adapterId, result, root) {
-    if (location !== 'local' || adapterId === 'pi') return;
+    if (enterprisePlanning || location !== 'local' || adapterId === 'pi') return;
     const failed = catalog.find((row) => row.id === adapterId);
     if (!failed) return;
     catalog = catalog.filter((row) => row.id !== adapterId);
@@ -570,6 +587,7 @@
     if (!valid() || !catalog.some(row => row.id === adapterId)) return false;
     const available = await probe(adapterId, boundOptions, false);
     if (!valid() || !available) return false;
+    if (enterprisePlanning && current !== adapterId) return false;
     selectCurrent(adapterId); changed();
     boundOptions.refresh(); paint(boundOptions.root);
     return true;
@@ -578,7 +596,8 @@
   function resetNewDraft() {
     const selection = ++selectionGeneration;
     locationGeneration++; cloudSelectionPromise = null;
-    selectedByLocation[location] = 'pi'; selectCurrent('pi'); changed();
+    const initial = enterprisePlanning ? 'ai-planning' : 'pi';
+    selectedByLocation[location] = initial; selectCurrent(initial); changed();
     if (!boundOptions) return Promise.resolve(false);
     boundOptions.refresh();
     return loadCatalog(boundOptions).then(() => selection === selectionGeneration ? refreshAccess() : false);
@@ -616,14 +635,16 @@
   global.ComposeRuntime = {
     bind, controls, paint, accessSupported, accessState, refreshAccess, goalSupported, ready, restoreSelection, resetNewDraft, value: () => current,
     brandIcon,
+    scene: () => enterprisePlanning ? (current === 'pi' ? 'coding' : 'business') : '',
+    localOnly: () => enterprisePlanning,
     location: () => location,
     availability: () => ({ checking: pendingProbes.has(probeKey(current)), ...(probes[probeKey(current)] || {}) }),
     setLocation(value) {
-      const nextLocation = value === 'cloud' ? 'cloud' : 'local';
+      const nextLocation = !enterprisePlanning && value === 'cloud' ? 'cloud' : 'local';
       if (location === nextLocation) return;
       locationGeneration++; probeGeneration++; pendingProbes.clear();
       cloudSelectionPromise = null; accessProbePromise = null;
-      location = value === 'cloud' ? 'cloud' : 'local';
+      location = nextLocation;
       selectCurrent(selectedByLocation[location]);
       selectionGeneration++; changed();
       if (boundOptions) {

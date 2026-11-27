@@ -22,6 +22,7 @@ function fixture(workflow = false) {
   const context = vm.createContext({ require: name => { assert.ok(modules[name], name); return modules[name]; },
     updateWorkloads: { guard: () => ({ ok: true }) }, session: { get: () => handle },
     sendIdentityOf: async () => ({}), identityOf: async () => ({}), app: {}, memories: { assertOwner() {} },
+    planningScene: require('../main/agent-runtime/planning-scene.cjs'),
     _cloudHandoff: { guard: () => false }, path, workDir: () => '/fixture',
     firstTurnTitle: { prepare: () => null, accepted() {} },
     attachments: { stage: async () => ({ files: [], warnings: [] }) },

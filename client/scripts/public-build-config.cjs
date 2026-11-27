@@ -1,7 +1,7 @@
 'use strict';
 
 const { buildDefaultHub } = require('../main/default-hub.cjs');
-const base = require('../package.json').build;
+const base = require('./prepare-planning.cjs').configuration(require('../package.json').build);
 
 // Keep installer identity, filenames, signing hooks and output paths identical.
 // electron-builder writes extraMetadata inside app.asar before code signing.

@@ -64,7 +64,7 @@ function pluginSelection(spec, catalog) {
 }
 
 function createWorker({ identityOf, request, journal, conversation, catalog, localModelOf, selectModel,
-  instanceId = crypto.randomUUID(), onError = () => {}, now = Date.now }) {
+  integrated = () => false, instanceId = crypto.randomUUID(), onError = () => {}, now = Date.now }) {
   let ticking = false, stopped = false;
   let authBlockedUntil = 0, authBlockedIdentity = '', authNoticeSent = false;
   const jobs = new Map();
@@ -145,8 +145,12 @@ function createWorker({ identityOf, request, journal, conversation, catalog, loc
       record = save(key, { ...record, state: 'running' });
       await acknowledge(identity, row.id, record); return;
     }
-    const input = claimed.input || {};
+    const input = { ...(claimed.input || {}) };
     try {
+      if (integrated() && !claimed.conversationId && !record?.conversationId) {
+        input.planningScene = input.planningScene === 'coding' ? 'coding' : 'business';
+        input.adapterId = require('./agent-runtime/planning-scene.cjs').adapter(input.planningScene);
+      }
       if (claimed.conversationId && (!record || record.conversationId !== claimed.conversationId)) {
         /*
          * The durable Hub receipt is the source of truth for a cross-client handoff.
@@ -212,7 +216,7 @@ function createWorker({ identityOf, request, journal, conversation, catalog, loc
         // legacy runtimes interpret the request as "reuse the last local
         // model", which can resurrect a stale Runner model instead of using
         // the selected runtime's current default.
-        adapterId: input.adapterId, modelName, intent: 'chat',
+        adapterId: input.adapterId, ...(input.planningScene ? { planningScene: input.planningScene } : {}), modelName, intent: 'chat',
         cwd: input.cwd || '', capabilities: input.capabilities && input.capabilities.length ? input.capabilities : undefined,
         skills: input.skills,
         ...(plugin ? { pluginLock: plugin } : {}),
@@ -343,7 +347,7 @@ function install({ app, ipcMain, identityOf, conversation, platformConnections, 
   });
   app.whenReady().then(() => {
     if (stopped) return;
-    worker = createWorker({ identityOf: () => identityOf(app),
+    worker = createWorker({ integrated: () => require('./managed-runtime.cjs').planningEnabled(app), identityOf: () => identityOf(app),
       request: require('./pi-session/task-input').request,
       journal: diskJournal(path.join(app.getPath('userData'), 'automation-conversations')),
       conversation, catalog: spec => require('./jiyong-scheduled-plugins.cjs').catalog(app,identityOf,spec),
