@@ -108,6 +108,22 @@ if (typeof electron === 'string') {
         await screenshot(surface + '-' + width);
         await click(trigger);
       }
+      if (!chat) {
+        await js(`const scenes = ['ai-planning', 'pi'].map(id => ({ id, displayName: AgentBrand.LABELS[id] }));
+          window.brandReply = () => ({ ok: true, enterprisePlanning: true, runtimes: scenes, availableRuntimes: scenes }); void 0`);
+        await click(trigger);
+        await until("ComposeRuntime.scene() === 'business'");
+        await click(trigger);
+        for (const [index, id] of ['ai-planning', 'pi', 'ai-planning'].entries()) {
+          if (index) {
+            await click(trigger);
+            await click(popup + ' [data-runtime="' + id + '"]');
+          }
+          await until("document.querySelector('#cpRuntimeIcon img')?.naturalWidth > 0");
+          await inspect('selected scene', trigger, id);
+          assert.equal(await js("document.querySelector('#cpRuntimeIcon').title"), id === 'pi' ? 'Pi' : 'Planning Harness');
+        }
+      }
       assert.deepEqual(await js(chat ? 'errors' : 'fixtureErrors'), []);
       win.setSize(1400, 950); win.webContents.setZoomFactor(1);
     }
