@@ -131,6 +131,30 @@ test('workbook authorization checks the active identity, file type, workspace an
   await assert.rejects(b.request('workbook.authorize', { operation: 'write', sha256: hash('spec'), path: 'report.xlsx' }), /授权/);
 });
 
+test('only a retryable Planning probe can recover during a catalog refresh', async () => {
+  const { createRunnerRuntimeAdapter } = require('../main/agent-runtime/runner-adapter');
+  const catalog = require('../main/agent-runtime/runtime-catalog').loadCatalog();
+  const busy = { ok: false, code: 'RUNNER_RPC_BUSY', retryable: true, uncertain: false };
+  for (const [id, first, expectedCalls] of [
+    ['ai-planning', busy, 2],
+    ['ai-planning', { ...busy, uncertain: true }, 1],
+    ['ai-planning', { ...busy, retryable: false }, 1],
+    ['ai-planning', { ...busy, code: 'RUNNER_STOPPED' }, 1],
+    ['codex', busy, 1],
+  ]) {
+    let calls = 0;
+    const adapter = createRunnerRuntimeAdapter({ runtimeSpec: catalog.runtime(id),
+      runnerRuntime: { async rpc(op, packet) {
+        assert.equal(op, 'runtime.detect');
+        assert.equal(packet.key, id);
+        return ++calls === 1 ? first : { ok: true, data: { installed: true, state: 'ready' } };
+      } },
+    });
+    assert.equal((await adapter.detect()).ok, expectedCalls === 2);
+    assert.equal(calls, expectedCalls);
+  }
+});
+
 test('the conversation adapter issues distinct scoped grants on dispatch and continuation, then revokes each', async t => {
   const f = fixture(t);
   const adapterId = 'ai-planning', alias = 'planning-contract';
@@ -139,13 +163,17 @@ test('the conversation adapter issues distinct scoped grants on dispatch and con
   const ref = _uuidV5('9af442c8-cd1d-4b91-a668-22da2b2635bf', 'chat:' + alias + ':' + adapterId);
   t.mock.method(require('../main/conversation/requirement-context'), 'cachedIdentity', () => f.identity);
   const grants = [], roles = [];
+  let probeCalls = 0;
   const adapter = createRunnerRuntimeAdapter({ app: f.app, runtimeSpec,
     modelConfig: { fetchModel: async (_identity, _name, _timeout, _fetch, _force, id, options) => {
       roles.push(id); assert.equal(options.allowLocal, false);
       return { ok: true, model: f.model };
     } },
     runnerRuntime: { async rpc(op, packet) {
-      if (op === 'runtime.detect') return { ok: true, data: { accessControl: runtimeSpec.accessControl } };
+      if (op === 'runtime.detect') {
+        if (++probeCalls === 1) return { ok: false, code: 'RUNNER_RPC_BUSY', retryable: true, uncertain: false };
+        return { ok: true, data: { accessControl: runtimeSpec.accessControl } };
+      }
       if (op === 'job.dispatch' || op === 'job.comment') {
         const cfg = packet.cfg;
         assert.deepEqual(cfg.llm, { model: f.model.id });
@@ -170,6 +198,7 @@ test('the conversation adapter issues distinct scoped grants on dispatch and con
     assert.equal(result.ok, true, result.reason || 'turn failed');
     await assert.rejects(grants.at(-1).request(), /失效/);
   }
+  assert.equal(probeCalls, 2);
   assert.deepEqual([...new Set(roles)], [adapterId]);
   assert.notEqual(grants[0].cfg.planningExecutionId, grants[1].cfg.planningExecutionId);
 });

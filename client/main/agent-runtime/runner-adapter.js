@@ -444,6 +444,25 @@ function _eventKind(touched, state) {
   return 'state.changed';
 }
 
+async function probeRuntime(runtime, adapterId) {
+  const timeout = 15000;
+  const deadline = Date.now() + timeout;
+  const probe = remaining => runtime.rpc('runtime.detect', { key: adapterId }, remaining);
+  let reply = await probe(timeout);
+  if (adapterId !== 'ai-planning') return reply;
+  // The chooser can still own the single per-runtime probe slot when Send opens
+  // the session. Only retry an explicit rejection of this read-only probe.
+  for (const delay of [100, 250, 500, 1000]) {
+    if (reply?.ok !== false || reply.code !== 'RUNNER_RPC_BUSY' ||
+        reply.retryable !== true || reply.uncertain !== false) break;
+    await new Promise(resolve => setTimeout(resolve, delay));
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    reply = await probe(remaining);
+  }
+  return reply;
+}
+
 async function createRunnerHandle(request, defaults, initialSession) {
   const opts = _legacyOptions(request);
   const runtime = defaults.runnerRuntime || runnerRuntime;
@@ -495,7 +514,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
   if (planning && !opts.accessPolicy && !resumeNative)
     opts.accessPolicy = require('../access-control/policy').create(opts.readOnly ? 'readonly' : 'standard', cwd);
   if (opts.accessPolicy) {
-    const probe = await runtime.rpc('runtime.detect', { key: adapterId }, 15000);
+    const probe = await probeRuntime(runtime, adapterId);
     if (!probe?.ok) {
       throw new RuntimeContractError('RUNNER_PROBE_FAILED', '执行机探测失败，请检查执行机状态后重试');
     }
@@ -2296,7 +2315,7 @@ function createRunnerRuntimeAdapter(options) {
     capabilities: runnerCapabilities(runtimeSpec),
     async detect() {
       try {
-        const reply = await runtime.rpc('runtime.detect', { key: adapterId }, 15000);
+        const reply = await probeRuntime(runtime, adapterId);
         const item = reply && reply.data || {};
         return item.installed && !['unauthed', 'nollm', 'missing'].includes(item.state)
           ? { ok: true, version: item.version || '', path: item.bin || '', state: item.state || 'ready',
