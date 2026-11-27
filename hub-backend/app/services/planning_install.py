@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import queue
@@ -10,10 +11,12 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 
 from . import planning_release as releases
+from .acp_process import OwnedProcessGroup, close_process
 
 # The same per-user lock is shared between all CLI processes and the installer.
 # A turn keeps its Python environment until its ACP process has exited.
@@ -133,21 +136,34 @@ def _run(python, args, error, *, timeout=180, cwd=None):
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 timeout=timeout, check=False,
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ValueError(error) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(f"{error}（超时 {timeout} 秒）") from exc
+    except OSError as exc:
+        raise ValueError(error + system_error_code(exc)) from exc
     if result.returncode:
-        raise ValueError(error)
+        raise ValueError(f"{error}（退出码 {result.returncode}）")
+
+
+def system_error_code(exc):
+    winerror = getattr(exc, "winerror", None)
+    if isinstance(winerror, int):
+        return f"（WinError {winerror}）"
+    return f"（errno {exc.errno}）" if isinstance(exc.errno, int) else ""
 
 
 def _handshake(python, version, state):
     args = [str(python), "-I", "-B", "-u", "-m", releases.MODULE + ".launch", "acp"]
     env = {**_environment(), "PLANNING_STATE_DIR": str(Path(state).resolve())}
     process = subprocess.Popen(args, env=env, cwd=state, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                               stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                               stderr=subprocess.DEVNULL, start_new_session=os.name != "nt",
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    group = OwnedProcessGroup(process.pid) if os.name != "nt" else None
     response = queue.Queue(maxsize=1)
+    readers = []
     try:
         thread = threading.Thread(target=lambda: response.put(process.stdout.readline(1024 * 1024)), daemon=True)
         thread.start()
+        readers.append(thread)
         request = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
                    "params": {"protocolVersion": 1, "clientCapabilities": {}}}
         process.stdin.write((json.dumps(request) + "\n").encode("utf-8"))
@@ -161,10 +177,34 @@ def _handshake(python, version, state):
     except (ValueError, AttributeError, OSError, queue.Empty) as exc:
         raise ValueError("已下载的软件包未通过本机 Planning ACP 握手") from exc
     finally:
-        process.kill()
-        process.wait(timeout=10)
-        process.stdin.close()
-        process.stdout.close()
+        # The Windows venv launcher can be a parent of the actual interpreter.
+        # EOF lets the ACP service close its SQLite connection before cleanup.
+        try:
+            try:
+                process.stdin.close()
+            except OSError as exc:
+                if not isinstance(exc, BrokenPipeError) and not (os.name == "nt" and exc.errno == errno.EINVAL):
+                    raise
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass
+        finally:
+            close_process(process, readers, group)
+
+
+def _remove_probe(state):
+    for attempt in range(5):
+        try:
+            shutil.rmtree(state)
+            return
+        except OSError as exc:
+            code = getattr(exc, "winerror", None)
+            if code not in (32, 33):
+                raise
+            if attempt == 4:
+                raise ValueError(f"Planning ACP 握手状态目录仍被占用（WinError {code}），请稍后重试") from exc
+            time.sleep(0.1 * 2 ** attempt)
 
 
 def _download(python, dest, lock, group, index):
@@ -214,8 +254,11 @@ def _prepare(generation, release, say):
         _run(python, args, "无法从已校验的 wheel 安装 Planning", timeout=600)
     _run(python, ["-m", "pip", "check"], "Planning 软件包依赖不完整")
     say("正在校验本机 ACP 接口")
-    with tempfile.TemporaryDirectory(dir=generation, prefix="probe-") as state:
+    state = tempfile.mkdtemp(dir=generation, prefix="probe-")
+    try:
         _handshake(python, release.version, state)
+    finally:
+        _remove_probe(state)
     (generation / "entry.py").write_text(_ENTRY, encoding="utf-8")
 
 
@@ -266,6 +309,7 @@ def install(action, say):
         try:
             _prepare(generation, release, say)
             with _exclusive(use, busy):
+                say("正在激活已通过 ACP 校验的 Planning 环境")
                 record = {"generation": version_id, "version": release.version, "sha256": release.sha256}
                 temp = directory / (version_id + ".tmp")
                 try:

@@ -87,6 +87,36 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "其他来源"):
                 source.latest()
 
+    def test_reverse_proxy_scheme_in_asset_metadata_only(self):
+        index = "https://registry.invalid/repository/company/simple/"
+        url = "https://registry.invalid/repository/company/packages/" + source.Release("0.8.0", "").filename
+        advertised = url.replace("https://", "http://", 1)
+        digest = "a" * 64
+
+        def item(link, repository="company"):
+            return {"repository": repository, "downloadUrl": link, "checksum": {"sha256": digest}}
+
+        for metadata_url, repository, accepted in [
+            (advertised, "company", True), (url, "company", True),
+            (advertised, "another", False),
+            (advertised.replace("registry.invalid", "foreign.invalid"), "company", False),
+            (advertised.replace("/packages/", "/other/"), "company", False),
+            (advertised.replace("registry.invalid", "registry.invalid:8080"), "company", False),
+            (advertised + "?mirror=1", "company", False),
+        ]:
+            with self.subTest(link=metadata_url, repository=repository), patch.dict(
+                os.environ, {"SODUWORK_PLANNING_INDEX_URL": index}
+            ), patch.object(source, "_read", side_effect=[
+                f'<a href="{url}">wheel</a>', json.dumps({"items": [item(metadata_url, repository)]}),
+            ]) as reader:
+                if accepted:
+                    self.assertEqual(source.latest(), source.Release("0.8.0", digest))
+                else:
+                    with self.assertRaisesRegex(ValueError, "SHA-256"):
+                        source.latest()
+                self.assertEqual(reader.call_count, 2)
+                self.assertTrue(all(call.args[0].startswith("https://registry.invalid/") for call in reader.call_args_list))
+
     def test_credentials_never_enter_index_arguments(self):
         for value in ["http://repo.example/simple", "https://user:example@repo.example/simple",
                       "https://repo.example/simple?token=example"]:
@@ -155,6 +185,11 @@ if __name__ == "__main__":
                 with patch.dict(os.environ, {"SODUWORK_MANAGED_PYTHON": "", "SODUWORK_RUNTIME_MANAGED": "0",
                                              "SODUWORK_SOURCE_SESSION": "1", "SODUWORK_SOURCE_RUNNER_PYTHON": sys.executable}):
                     install.install("install", lambda _: None)
+                old = install._record()
+                install.install("update", lambda _: None)
+                new = install._record()
+                self.assertEqual((old["version"], old["sha256"]), (new["version"], new["sha256"]))
+                self.assertNotEqual(old["generation"], new["generation"])
                 console, version = install.installation()
                 self.assertEqual(version, "1.0.0")
                 cmd = [*acp_agents.executable_command("ai-planning", console), "acp"]
@@ -188,3 +223,49 @@ if __name__ == "__main__":
                 self.assertEqual(install.installation(), ("", ""))
                 install.install("uninstall", lambda _: None)
                 self.assertEqual(list((install.root() / "versions").iterdir()), [])
+
+
+class ProbeCleanupTests(unittest.TestCase):
+    def test_probe_waits_for_eof_and_database_close_before_returning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            script = state / "test_probe.py"
+            script.write_text(
+                "import json, sqlite3, sys\n"
+                "from pathlib import Path\n"
+                "store = sqlite3.connect('sessions.sqlite3')\n"
+                "request = json.loads(sys.stdin.readline())\n"
+                "print(json.dumps({'id': request['id'], 'result': {'protocolVersion': 1, 'agentInfo': "
+                "{'name': 'planning-harness', 'version': '0.2.0'}}}), flush=True)\n"
+                "assert sys.stdin.read() == ''\n"
+                "store.close()\n"
+                "Path('probe-closed').touch()\n", encoding="utf-8")
+            spawn = subprocess.Popen
+
+            def run_probe(args, **kwargs):
+                return spawn([args[0], "-I", "-B", "-u", str(script)], **kwargs)
+
+            with patch.object(subprocess, "Popen", side_effect=run_probe):
+                install._handshake(sys.executable, "0.2.0", state)
+            self.assertTrue((state / "probe-closed").is_file())
+            (state / "sessions.sqlite3").unlink()
+
+    def test_probe_cleanup_only_retries_bounded_windows_sharing_errors(self):
+        error = PermissionError("fixture path")
+        for code in (32, 33, 5):
+            error.winerror = code
+            with self.subTest(code=code), patch.object(install.shutil, "rmtree", side_effect=error) as remove, \
+                    patch.object(install.time, "sleep"):
+                if code == 5:
+                    with self.assertRaises(PermissionError) as caught:
+                        install._remove_probe("probe-fixture")
+                    self.assertIs(caught.exception, error)
+                    self.assertEqual(remove.call_count, 1)
+                else:
+                    with self.assertRaisesRegex(ValueError, "WinError " + str(code)):
+                        install._remove_probe("probe-fixture")
+                    self.assertEqual(remove.call_count, 5)
+        error.winerror = 32
+        with patch.object(install.shutil, "rmtree", side_effect=[error, None]) as remove, patch.object(install.time, "sleep"):
+            install._remove_probe("probe-fixture")
+            self.assertEqual(remove.call_count, 2)

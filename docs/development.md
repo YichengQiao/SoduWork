@@ -89,7 +89,7 @@ npm start
 
 ### 可选的本机 Planning Harness
 
-在当前桌面的「Agent 管理 → Planning Harness」点击「装上」。本机 Runner 使用客户端自带的 CPython 3.12，将 `soduwork-planning-harness` 及锁定哈希的依赖安装到用户目录。管理抽屉显示已装版本，提供检查新版、更新和卸载操作。安装完成后，在本机会话的「执行底座」选择 Planning Harness 即可发起会话。新草稿仍默认选择 Pi。Planning 通过 stdio 使用 ACP 协议，调用会话选定的模型，写入工作区前沿用桌面权限审批。
+在当前桌面的「Agent 管理 → Planning Harness」点击「装上」。本机 Runner 使用客户端自带的 CPython 3.12，将 `soduwork-planning-harness` 及锁定哈希的依赖安装到用户目录。管理抽屉显示已装版本，提供检查新版、更新和卸载操作。安装完成后，在本机会话的「执行底座」选择 Planning Harness 即可发起会话。首次使用目录时新草稿默认选择 Pi，已经保存过底座偏好的目录沿用该选择。Planning 通过 stdio 使用 ACP 协议，调用会话选定的模型，写入工作区前沿用桌面权限审批。
 
 公司发行作业通过 `SODUWORK_PLANNING_INDEX_URL` 指定 Nexus PyPI hosted 仓库的 HTTPS simple 地址。公共依赖默认从 PyPI 下载，也可通过 `SODUWORK_PLANNING_PUBLIC_INDEX_URL` 指定镜像。应用元数据只记录源地址。源码启动时从环境读取这两个变量。用户安装或更新时须能读取两个包源。Planning 团队在 Nexus 独立发布后续版本。
 

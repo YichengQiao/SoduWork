@@ -93,11 +93,14 @@ def _asset_digest(index, version, href):
     if path:
         endpoint = urlunsplit((url.scheme, url.netloc, path[1] + "/service/rest/v1/search/assets", "", ""))
         query = {"repository": path[2], "name": NAME, "version": version}
+        # TLS-terminating Nexus proxies can advertise the same asset with an HTTP
+        # scheme. That field identifies a checksum; it is never a download URL here.
+        asset_urls = (href, urlsplit(href)._replace(scheme="http").geturl())
         seen = set()
         while True:
             response = json.loads(_read(endpoint + "?" + urlencode(query), 2_000_000, "application/json"))
             for item in response.get("items") or ():
-                if item.get("downloadUrl") == href and item.get("repository") == path[2]:
+                if item.get("repository") == path[2] and item.get("downloadUrl") in asset_urls:
                     digest = (item.get("checksum") or {}).get("sha256", "")
                     if isinstance(digest, str) and _DIGEST.fullmatch(digest):
                         return digest.lower()

@@ -681,7 +681,9 @@ def _run_planning(jid, action):
         _done(jid, True, detail)
     except ValueError as exc:
         _done(jid, False, str(exc))
-    except (OSError, RuntimeError, KeyError):
+    except OSError as exc:
+        _done(jid, False, "Planning 安装操作未完成，请查看最后一个步骤" + planning_install.system_error_code(exc))
+    except (RuntimeError, KeyError):
         _done(jid, False, "Planning 安装失败，请检查软件源、用户目录和本机 Python 环境")
 
 
