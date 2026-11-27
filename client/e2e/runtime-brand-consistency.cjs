@@ -120,8 +120,11 @@ if (typeof electron === 'string') {
             await click(popup + ' [data-runtime="' + id + '"]');
           }
           await until("document.querySelector('#cpRuntimeIcon img')?.naturalWidth > 0");
-          await inspect('selected scene', trigger, id);
-          assert.equal(await js("document.querySelector('#cpRuntimeIcon').title"), id === 'pi' ? 'Pi' : 'Planning Harness');
+          const identity = await js(`(() => {const icon = document.querySelector('#cpRuntimeIcon');
+            return [icon.dataset.agentBrand, icon.title, icon.getAttribute('aria-label'), icon.querySelector('img').getAttribute('src')];})()`);
+          const label = id === 'pi' ? 'Pi' : 'Planning Harness';
+          const artwork = id === 'pi' ? 'pi.svg' : 'planning.png';
+          assert.deepEqual(identity, [id, label, label, 'assets/agent-brands/' + artwork]);
         }
       }
       assert.deepEqual(await js(chat ? 'errors' : 'fixtureErrors'), []);
