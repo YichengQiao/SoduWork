@@ -424,30 +424,14 @@ test('directory runtime restore checks its caller scope again after asynchronous
   }
 });
 
-test('integrated composer keeps unavailable business Planning selected and exposes local Coding explicitly', async () => {
-  const f = fixture(() => ({ ok: true, enterprisePlanning: true, runtimes: fullCatalog,
-    availableRuntimes: [fullCatalog[0]], missing: [{ id: 'ai-planning', displayName: 'Planning' }] }));
-  f.api.probe = async id => id === 'pi' ? { ok: true } : { ok: false, reason: 'Planning 安装损坏' };
+test('Planning installation adds a choice and leaves the new draft default at Pi', async () => {
+  const planning = { id: 'ai-planning', displayName: 'Planning Harness' };
+  const rows = [fullCatalog[0], planning, ...fullCatalog.slice(1)];
+  const f = fixture(() => ({ ok: true, runtimes: rows, availableRuntimes: rows }));
   await f.runtime.ready();
-  assert.equal(f.runtime.value(), 'ai-planning');
-  assert.equal(f.runtime.scene(), 'business');
-  assert.equal(await f.runtime.ready(), false);
-  assert.equal(f.runtime.availability().reason, 'Planning 安装损坏');
-  await f.select('pi');
-  assert.equal(f.runtime.scene(), 'coding');
-  assert.equal(await f.runtime.ready(), true);
-  await f.runtime.resetNewDraft(); assert.equal(f.runtime.scene(), 'business');
-});
-
-test('a cloud click before the integrated catalog loads resolves to the local business scene', async () => {
-  const catalog = deferred();
-  const f = fixture(() => catalog.promise);
-  f.runtime.setLocation('cloud');
-  assert.equal(f.runtime.location(), 'cloud');
-  catalog.resolve({ ok: true, enterprisePlanning: true, runtimes: fullCatalog });
-  await flush(); await f.runtime.ready();
-  assert.equal(f.runtime.scene(), 'business');
-  assert.equal(f.runtime.location(), 'local');
-  f.runtime.setLocation('cloud');
-  assert.equal(f.runtime.location(), 'local');
+  assert.equal(f.runtime.value(), 'pi');
+  await f.select(planning.id);
+  assert.equal(f.runtime.value(), planning.id);
+  await f.runtime.resetNewDraft();
+  assert.equal(f.runtime.value(), 'pi');
 });

@@ -89,9 +89,9 @@ Run `npm test` and `npm run check:layout` in `client/`. Electron end-to-end chec
 
 ### Optional local Planning Harness
 
-To test an integrated desktop, obtain the approved `soduwork-planning-harness` wheel, its independently recorded SHA-256, and a directory containing the locked dependency wheels for the target platform. Set `SODUWORK_PLANNING_WHEEL` and `SODUWORK_PLANNING_WHEELHOUSE` to their absolute paths and `SODUWORK_PLANNING_SHA256` to the approved digest. In `client/`, run `node scripts/prepare-planning.cjs --development`, then `npm start`. The same three build inputs enable the harness in a packaged desktop.
+Open **Agent management → Planning Harness → Install** on the current desktop. The private Runner uses SoduWork's CPython 3.12 to install the `soduwork-planning-harness` wheel and its hash-locked dependencies in a user-owned environment. The management drawer shows the installed version and supports checking for updates, updating and uninstalling. After installation, select **Planning Harness** in the local conversation’s Agent picker. Pi remains the default for a new draft. Planning uses ACP over stdio, the model selected for the conversation and the desktop permission broker for workspace writes.
 
-Open a business conversation to use Planning through the local Runner over ACP stdio. Open a Coding conversation to use local Pi. The desktop handles model API requests and prompts for approval before Planning writes to the workspace. End users receive the runtime with the integrated application.
+For a managed distribution, set `SODUWORK_PLANNING_INDEX_URL` to the company's HTTPS Nexus PyPI hosted simple index when building the client. Optionally set `SODUWORK_PLANNING_PUBLIC_INDEX_URL` to a mirror for public dependencies (default: PyPI). Only index locations enter the application metadata. A source launch reads these variables from its environment. The user needs read access to both package sources at installation or update time. The Planning team publishes versions independently to Nexus.
 
 ## Skills and plugins
 

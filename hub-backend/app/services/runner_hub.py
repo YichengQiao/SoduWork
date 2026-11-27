@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 
-from ..agent_catalog import AGENTS, desktop_only
+from ..agent_catalog import HUB_AGENTS as AGENTS
 from . import execution_capabilities
 from .runner_identity_error import RunnerIdentityConflict
 
@@ -77,8 +77,6 @@ def clean_agent_inventory(value) -> list[dict]:
             continue
         key = str(row.get("key") or row.get("id") or "").strip()
         base = key.split(":", 1)[-1].strip()
-        if desktop_only(base):
-            continue
         if base not in active and not base.startswith("custom-"):
             continue
         result.append(row)

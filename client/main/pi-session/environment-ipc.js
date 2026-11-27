@@ -200,19 +200,15 @@ function install({ app, ipcMain, session, identityOf, capabilityGrantsOf, _skill
   });
 
   ipcMain.handle('pi-session-runtimes', async (_event, options) => {
-    const enterprisePlanning = require('../managed-runtime.cjs').planningEnabled(app);
     try {
       if (options?.catalogOnly === true) return { ok: true, runtimes: session.runtimes() };
-      if (typeof session.availableRuntimes === 'function') {
-        const inventory = await session.availableRuntimes(app, options || {});
-        return enterprisePlanning ? { ...inventory, enterprisePlanning } : inventory;
-      }
+      if (typeof session.availableRuntimes === 'function') return await session.availableRuntimes(app, options || {});
       const catalog = session.runtimes();
-      return { ok: true, ...(enterprisePlanning ? { enterprisePlanning } : {}), runtimes: catalog,
+      return { ok: true, runtimes: catalog,
         availableRuntimes: catalog.filter(row => row && row.id === 'pi'),
         missing: catalog.filter(row => row && row.id !== 'pi') };
     }
-    catch (e) { return { ok: false, ...(enterprisePlanning ? { enterprisePlanning } : {}), reason: String((e && e.message) || e), runtimes: [] }; }
+    catch (e) { return { ok: false, reason: String((e && e.message) || e), runtimes: [] }; }
   });
   ipcMain.handle('pi-session-runtime-models', (event, adapterId) => {
     try { return nativeModelCatalog.list(adapterId || ''); }

@@ -119,8 +119,6 @@ function create({ raw: initial, options, restored, openNative, disposeNative, pr
     });
   }
   async function selectAgent(agentId, selection = {}) {
-    if (agentId !== raw.adapterId && (handle.planningScene || raw.adapterId === 'ai-planning' || agentId === 'ai-planning'))
-      return { ok: false, reason: '执行者已绑定，请从对应场景新建会话' };
     if (closed || switching) return { ok: false, reason: '正在切换会话，请稍候' };
     if (pendingModel) return { ok: false, reason: '正在切换模型，请稍候再切换 Agent' };
     if (String(agentId) === raw.adapterId) return { ok: true, snapshot: snapshot() };
@@ -277,11 +275,6 @@ function create({ raw: initial, options, restored, openNative, disposeNative, pr
         if ((closed || switching) && ['send', 'submit', 'selectModel', 'setThinkingLevel', 'setAccessPolicy', 'bindTask'].includes(key)) {
           const result = { ok: false, reason: closed ? '会话已关闭，请重新打开' : '正在切换 Agent，请稍候再发送' };
           return key === 'submit' ? { accepted: false, result } : result;
-        }
-        if (key === 'send' || key === 'submit') {
-          // Keep delegation callbacks in the host when the scene owns a local executor.
-          const blocked = require('./planning-scene.cjs').controlledTurnError(handle, args[2]);
-          if (blocked) return key === 'submit' ? { accepted: false, result: blocked, completion: Promise.resolve(blocked) } : Promise.resolve(blocked);
         }
         if (key === 'setThinkingLevel' && pendingModel) return { ok: false, reason: '正在切换模型，请稍候' };
         if (key === 'selectModel') {

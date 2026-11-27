@@ -96,12 +96,6 @@ function mutableCatalog(initial) {
     },
   });
 }
-const declared = loadCatalog();
-const appPath = path.resolve(__dirname, '../..');
-const integrated = require('../managed-runtime.cjs').planningEnabled({
-  isPackaged: /(?:^|[/\\])[^/\\]+\.asar(?:[/\\]|$)/.test(__dirname), getAppPath: () => appPath,
-});
-const catalog = mutableCatalog(integrated ? declared : createRuntimeCatalog({ schemaVersion: 1,
-  agents: declared.runtimes().filter(row => row.id !== 'ai-planning') }));
+const catalog = mutableCatalog(loadCatalog());
 module.exports = { ...catalog, get RUNTIMES() { return catalog.RUNTIMES; },
   createRuntimeCatalog, loadCatalog, mutableCatalog, normalize };

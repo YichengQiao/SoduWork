@@ -84,10 +84,10 @@ def validate_catalog(data: dict) -> dict[str, dict]:
             ):
                 raise ValueError(f'{key}: modelEnv may only map environment names to base/key/model')
         install = row.get('install')
-        if not isinstance(install, dict) or install.get('installer') not in {'npm', 'managed', 'manual', 'bundled'}:
+        if not isinstance(install, dict) or install.get('installer') not in {'npm', 'managed', 'manual', 'python'}:
             raise ValueError(f'{key}: unsupported installer')
-        if (install['installer'] == 'bundled') != (key == 'ai-planning'):
-            raise ValueError(f'{key}: unsupported bundled runtime')
+        if (install['installer'] == 'python') != (key == 'ai-planning'):
+            raise ValueError(f'{key}: unsupported managed Python runtime')
         if install['installer'] == 'managed' and key != 'opencode':
             raise ValueError(f'{key}: no reviewed managed installer is registered')
         if install['installer'] == 'npm' and not re.fullmatch(r'(?:@[a-z0-9._-]+/)?[a-z0-9._-]+', str(install.get('pkg') or '')):
@@ -106,9 +106,7 @@ def desktop_only(key: str) -> bool:
     return isinstance(key, str) and AGENTS.get(key, {}).get('executionLocations') == ['desktop']
 
 
-def desktop_execution(run: dict) -> bool:
-    return desktop_only(run.get('cli')) or any(desktop_only(row.get('agentId'))
-            for row in run.get('contextSegments') or () if isinstance(row, dict))
+HUB_AGENTS = {key: row for key, row in AGENTS.items() if not desktop_only(key)}
 
 
 def install_specs() -> dict[str, dict]:

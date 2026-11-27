@@ -27,10 +27,6 @@ function verify(root = path.resolve(__dirname, '..'), platform = process.platfor
   { packaged = false, resourcesPath = path.join(root, 'resources') } = {}) {
   const manifest = readManifest(packaged ? resourcesPath : root);
   const files = requiredFiles(manifest, platform);
-  if (packaged && (require('./prepare-planning.cjs').release() || fs.existsSync(path.join(resourcesPath, 'planning')))) {
-    files.push('planning/manifest.json', 'planning/requirements.lock', 'planning/launch.py', 'planning/site/planning_cli/__main__.py',
-      'skills/office/scripts/planning_workbook.py', 'skills/office/scripts/inspect_office.py');
-  }
   if (packaged) for (const relative of files) {
     const file = path.join(resourcesPath, ...relative.split('/'));
     if (!fs.existsSync(file) || !fs.statSync(file).isFile() || fs.statSync(file).size === 0) {
@@ -47,16 +43,7 @@ function verifyExecutables(resourcesPath, platform, arch) {
   const result = node.verifyRuntime(path.join(resourcesPath, 'node'), release);
   // A cross-architecture package must pass the native release acceptance job.
   if (platform === process.platform && arch === process.arch) {
-    const python = require('./prepare-python-runtime.cjs');
-    python.selfTest(path.join(resourcesPath, 'python'), platform, arch);
-    const planning = path.join(resourcesPath, 'planning');
-    if (require('./prepare-planning.cjs').release() || fs.existsSync(planning)) {
-      const executable = python.executable(path.join(resourcesPath, 'python'), platform);
-      const { execFileSync } = require('node:child_process');
-      execFileSync(executable, ['-I', '-B', path.join(__dirname, 'unpack-planning.py'), '--probe', planning], { timeout: 45000 });
-      execFileSync(executable, ['-I', '-B', path.join(resourcesPath, 'skills/office/scripts/planning_workbook.py'),
-        '--check'], { timeout: 15000 });
-    }
+    require('./prepare-python-runtime.cjs').selfTest(path.join(resourcesPath, 'python'), platform, arch);
   }
   return { nativeSelfTest: result.executed };
 }

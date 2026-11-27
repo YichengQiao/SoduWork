@@ -212,8 +212,6 @@ def _bin_of(key: str) -> str:
 
 def is_bundled(key: str) -> bool:
     """Whether this agent is shipped and lifecycle-managed by SoduWork."""
-    if key == "ai-planning":
-        return bool(_bin_of(key))
     if key == "pi":
         return bool(_bundled_pi_cli_js() and _bundled_pi_node())
     return False
@@ -226,8 +224,9 @@ def _version_of(key: str) -> tuple[str, str, str]:
     binp = _bin_of(key)
     spec = _SPECS.get(key) or {}
     if key == "ai-planning":
-        from .acp_agents import planning_version
-        return (planning_version(binp), "bundled", "") if binp else ("", "", "")
+        from .planning_install import installation
+        _, version = installation()
+        return version, "managed" if version else "", ""
     if spec.get("installer") == "managed":
         if key == "opencode" and (issue := managed_agents._cpu_compatibility_issue()):
             return managed_agents._read_active(), "managed-record", issue
@@ -412,7 +411,20 @@ def detect(key: str, *, has_model: bool = True, probes: dict | None = None) -> d
     if key == "dsh" and setup_state == "missing":
         from .agent_installation import dsh_desktop_detected
         agent["desktopAppDetected"] = dsh_desktop_detected()
-    return _decorate_agent(agent)
+    result = _decorate_agent(agent)
+    if key == "ai-planning":
+        from .planning_release import index_url
+        try:
+            index_url()
+            issue = ""
+        except ValueError as exc:
+            issue = str(exc)
+        result.update(installer="python", canProbe=False, canConfigure=False, modelPick=False,
+                      probeReason="请在本机业务会话中使用企业模型授权", installSourceConfigured=not issue,
+                      installSourceIssue=issue)
+        if issue and not installed:
+            result["why"] = issue
+    return result
 
 
 def _config_ready(key: str) -> bool:
@@ -471,6 +483,8 @@ def _done(jid: str, ok: bool, detail: str, code: int | None = None) -> None:
 def job(jid: str, *, owner_id: str | None = None, include_private: bool = False) -> dict | None:
     with _JOB_LOCK:
         j = _JOBS.get(jid)
+        if j and j.get("key") == "ai-planning" and (not include_private or not owner_id or owner_id != j.get("_owner")):
+            return None
         if j and j.get("_private"):
             if not include_private:
                 return None
@@ -602,6 +616,14 @@ def start_install(key: str, action: str, *, owner_id: str = "") -> str:
             return jid
         _spawn(jid, _run_codex_login)
         return jid
+    if key == "ai-planning":
+        if not owner_id:
+            _done(jid, False, "请从当前登录账号的本机 Agent 管理中操作")
+            return jid
+        with _JOB_LOCK:
+            _JOBS[jid]["_owner"] = owner_id
+        _spawn(jid, _run_planning, action)
+        return jid
     if is_bundled(key):
         version = _version_of(key)[0]
         name = str((_PROFILES.get(key) or {}).get("name") or key)
@@ -651,6 +673,17 @@ def cancel_login(jid: str, *, owner_id: str = "") -> dict:
             return {"jobId": jid, "cancelled": False, "state": "done"}
     cancelled = codex_login_flow.cancel(jid, _data_root())
     return {"jobId": jid, "cancelled": cancelled, "state": "cancelling"}
+
+
+def _run_planning(jid, action):
+    from . import planning_install
+    try:
+        detail = planning_install.install(action, lambda line: _say(jid, line))
+        _done(jid, True, detail)
+    except ValueError as exc:
+        _done(jid, False, str(exc))
+    except (OSError, RuntimeError, KeyError):
+        _done(jid, False, "Planning 安装失败，请检查软件源、用户目录和本机 Python 环境")
 
 
 def _run_managed(jid: str, key: str, action: str) -> None:

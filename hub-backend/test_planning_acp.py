@@ -236,39 +236,85 @@ class PlanningRunnerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(c["method"] == "workbook.authorize" for c in self.calls), 3)
         self.assertTrue((self.root / "report.xlsx").is_file())
 
-    async def test_remote_cannot_access_planning_run_or_dispatch(self):
+    def test_office_command_uses_the_desktop_python_and_sibling_skill(self):
+        from app.services import planning_workbook
+        layout = "python/python.exe" if os.name == "nt" else "python/bin/python3"
+        python = self.root / layout
+        helper = self.root / "skills/office/scripts/planning_workbook.py"
+        for f in (python, helper, helper.with_name("inspect_office.py")):
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.touch()
+        with patch.dict(os.environ, {"SODUWORK_MANAGED_PYTHON": str(python), "SODUWORK_PLANNING_WORKBOOK": str(helper)}), \
+                patch.object(planning_workbook.subprocess, "run") as probe:
+            probe.return_value.stdout = b'{"ready":true}'
+            self.assertEqual(planning_workbook.command(), [str(python), "-I", "-B", "-u", str(helper)])
+            self.assertEqual(probe.call_count, 1)
+            with patch.dict(os.environ, {"SODUWORK_PLANNING_WORKBOOK": str(self.root / "elsewhere.py")}):
+                self.assertIsNone(planning_workbook.command())
+            with patch.dict(os.environ, {"SODUWORK_MANAGED_PYTHON": str(self.root / "elsewhere/python3")}):
+                self.assertIsNone(planning_workbook.command())
+            helper.with_name("inspect_office.py").unlink()
+            self.assertIsNone(planning_workbook.command())
+            self.assertEqual(probe.call_count, 1)
+
+    def test_only_the_execution_target_is_desktop_only(self):
+        from fastapi import HTTPException
+        from app.services import cloud_conversations, cloud_environments, handoff_agent_policy
+        targets = cloud_environments._available_agents([{"key": "ai-planning"}])
+        self.assertNotIn("ai-planning", {target["id"] for target in targets})
+        with self.assertRaises(HTTPException) as denied:
+            cloud_conversations.clean_options({"agentId": "ai-planning", "sessionId": "test-planning", "text": "continue"})
+        self.assertEqual(denied.exception.status_code, 422)
+        source = {"adapterId": "ai-planning"}
+        consent = {"fromAgentId": "ai-planning", "toAgentId": "pi", "accepted": True}
+        self.assertTrue(handoff_agent_policy.validate(source, {"agentFallback": consent}, "pi"))
+        with self.assertRaises(HTTPException):
+            handoff_agent_policy.validate(source, {}, "pi")
+
+    async def test_remote_cannot_start_or_continue_a_planning_turn(self):
         import runner_main
         from app.services import runner_event_scope
         runner = object.__new__(runner_main.Runner)
         for message in [{"op": "job.dispatch", "cli": "ai-planning"},
-                        {"op": "job.session", "ref": self.ref},
+                        {"op": "job.comment", "ref": self.ref},
                         {"op": "job.comment", "cfg": self.cfg, "ref": self.ref}]:
             packet = runner_event_scope.ingress({**message, "_localParent": True}, local=False)
             result = await runner._job(packet)
             self.assertEqual(result["code"], "DESKTOP_AGENT_REQUIRED")
 
-    def test_requires_trusted_bundled_files_and_local_identity(self):
-        from app.services import acp_agents, agent_setup, planning_host
-        self.assertFalse(agent_setup.can_uninstall("ai-planning"))
+    async def test_planning_history_uses_the_standard_session_projection(self):
+        import runner_main
+        from app.services import ai_local, local_stream, runner_admission, runner_event_scope
+        runner = object.__new__(runner_main.Runner)
+        runner._admission = runner_admission.AdmissionQueue()
+        with patch.object(ai_local, "session_sync", return_value={"items": [], "usageReceipts": ["private"]}), \
+                patch.object(local_stream, "authorization_required_sync", return_value=False):
+            answer = await runner._job(runner_event_scope.ingress({"op": "job.session", "ref": self.ref}, local=False))
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual(answer["data"]["items"], [])
+        self.assertNotIn("usageReceipts", answer["data"])
+
+    def test_requires_managed_planning_installation_and_local_identity(self):
+        from app.services import acp_agents, agent_setup, planning_host, planning_install
+        self.assertTrue(agent_setup.can_uninstall("ai-planning"))
         launcher = self.root / "launch.py"
         launcher.touch()
-        with patch.dict(os.environ, {"SODUWORK_MANAGED_PYTHON": sys.executable,
-                "SODUWORK_AGENT_AI_PLANNING_BIN": sys.executable, "SODUWORK_PLANNING_LAUNCHER": ""}):
+        with patch.dict(os.environ, {"SODUWORK_DATA_ROOT": str(self.root),
+                "SODUWORK_AGENT_AI_PLANNING_BIN": sys.executable, "SODUWORK_PLANNING_LAUNCHER": str(launcher)}):
             self.assertIsNone(acp_agents.find_bin("ai-planning"))
-            os.environ["SODUWORK_PLANNING_LAUNCHER"] = str(launcher)
-            self.assertIsNone(acp_agents.find_bin("ai-planning"))
-            (self.root / "manifest.json").write_text(json.dumps({
-                "schema": 1, "protocolVersion": 1, "hostExtensionVersion": 1,
-                "harnessId": "ai-planning", "distribution": "soduwork-planning-harness",
-                "version": "0.2.0", "planningRevision": "1" * 40}), encoding="utf-8")
-            self.assertIsNone(acp_agents.find_bin("ai-planning"))
-            for relative in ("site/planning_cli/__main__.py", "soduwork_planning_harness-0.2.0.dist-info/METADATA"):
-                required = self.root / relative
-                required.parent.mkdir(parents=True)
-                required.touch()
-            self.assertEqual(acp_agents.planning_version(launcher), "0.2.0")
-            argv = acp_agents.command_argv("ai-planning", str(launcher), [], str(self.root))
-            self.assertEqual(argv[argv.index("--") + 1:], [sys.executable, "-I", "-B", "-u", str(launcher), "acp"])
+            generation = planning_install.root() / "versions" / ("a" * 32)
+            console = planning_install._console(generation)
+            console.parent.mkdir(parents=True)
+            for path in (console, planning_install._interpreter(generation), generation / "entry.py", generation / "pyvenv.cfg"):
+                path.touch()
+            self.assertIsNone(acp_agents.find_bin("ai-planning"), "an unactivated environment cannot execute")
+            (planning_install.root() / "active.json").write_text(json.dumps({
+                "generation": generation.name, "version": "0.2.0", "sha256": "b" * 64}), encoding="utf-8")
+            self.assertEqual(acp_agents.find_bin("ai-planning"), str(console))
+            argv = acp_agents.command_argv("ai-planning", str(console), [], str(self.root))
+            self.assertEqual(argv[argv.index("--") + 1:],
+                             [str(planning_install._interpreter(generation)), "-I", "-B", "-u",
+                              str(generation / "entry.py"), "acp"])
         with self.assertRaises(ValueError):
             planning_host.Turn(self.ref, self.cfg, {"eventDestination": "hub"})
         self.assertFalse(planning_host.authorized({**self.cfg, "llm": {"key": "private"}}))

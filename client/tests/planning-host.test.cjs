@@ -5,11 +5,41 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { pathToFileURL } = require('node:url');
 const host = require('../main/agent-runtime/planning-host.cjs');
-const scene = require('../main/agent-runtime/planning-scene.cjs');
 const config = require('../main/agent-runtime/runner-config.cjs');
-const cloud = require('../main/conversation/cloud-handoff');
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
+
+test('management forwards only Planning operations from the desktop under the active owner', async () => {
+  let handle, owner = 'alice';
+  const calls = [], key = 'ai-planning', jobId = 'abc123abc123';
+  const frame = {};
+  const sender = { getURL: () => pathToFileURL(path.resolve(__dirname, '../desk.html')).href,
+    isDestroyed: () => false, mainFrame: frame };
+  const event = { sender, senderFrame: frame };
+  require('../main/agent-runtime/planning-management.cjs').install({
+    ipcMain: { handle: (_channel, fn) => { handle = fn; } },
+    scopeOf: () => ({ hub: 'https://fixture.invalid', clientId: 'device', owner }),
+    runner: { rpc: async (op, packet) => {
+      calls.push({ op, packet });
+      return { ok: true, data: op === 'agent.install' ? { jobId } : { key, installed: false } };
+    } },
+  });
+  const status = await handle(event, { action: 'status' });
+  assert.equal(status.agent.installed, false);
+  assert.deepEqual(calls[0], { op: 'runtime.detect', packet: { key } });
+  for (const action of ['install', 'check', 'update', 'uninstall']) {
+    assert.deepEqual(await handle(event, { action, owner: status.owner }), { jobId });
+    assert.deepEqual(calls.at(-1), { op: 'agent.install', packet: { key, action, ownerId: status.owner } });
+  }
+  await handle(event, { action: 'job', owner: status.owner, jobId });
+  assert.deepEqual(calls.at(-1), { op: 'agent.job', packet: { jobId, ownerId: status.owner } });
+  await assert.rejects(handle({ sender, senderFrame: {} }, { action: 'status' }), /工作台/);
+  await assert.rejects(handle(event, { action: 'login', owner: status.owner }), /无效/);
+  owner = 'bob';
+  await assert.rejects(handle(event, { action: 'uninstall', owner: status.owner }), /账号/);
+  assert.equal(calls.length, 6);
+});
 
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'planning-acp-'));
@@ -83,23 +113,6 @@ test('commit verifies real files and persists one receipt per execution, rejecti
   f.identity.session = 'signed-out-or-other-account';
   await assert.rejects(b.request('commit', params), /失效/);
 });
-test('integrated editions fix local business and Coding scenes and reload the owner-bound history', t => {
-  const f = fixture(t);
-  assert.equal(scene.forNew(f.app, {}), '');
-  const runtime = path.join(f.dir, '.runtime', 'planning');
-  fs.mkdirSync(runtime, { recursive: true }); fs.writeFileSync(path.join(runtime, 'manifest.json'), '{}');
-  assert.equal(scene.forNew(f.app, { adapterId: 'pi' }), 'business');
-  assert.equal(scene.forNew(f.app, { planningScene: 'coding' }), 'coding');
-  assert.equal(scene.forNew(f.app, { chatId: 'archived' }), '');
-  assert.equal(scene.adapter('business'), 'ai-planning'); assert.equal(scene.adapter('coding'), 'pi');
-  const handle = { adapterId: 'pi', sessionId: 's1' };
-  scene.bind(f.app, f.identity, handle, 'coding');
-  assert.throws(() => cloud.assertPortable(handle), /本机/);
-  assert.equal(scene.restore(f.app, f.identity, 's1'), 'coding');
-  assert.equal(scene.restore(f.app, { ...f.identity, session: 'other' }, 's1'), '');
-  assert.throws(() => scene.bind(f.app, f.identity, handle, 'business'), /绑定/);
-});
-
 test('workbook authorization checks the active identity, file type, workspace and current write policy', async t => {
   const f = fixture(t);
   let policy = { mode: 'standard', revision: 1 };

@@ -67,10 +67,11 @@
         ]
       },
       "install": {
-        "installer": "bundled",
+        "installer": "python",
+        "pkg": "soduwork-planning-harness",
         "source": "soduwork-planning-harness (Python wheel)",
-        "blurb": "Planning Harness 独立发布，使用 SoduWork 随包提供的本机 Python。",
-        "install_how": "请安装包含 Planning Harness 的 SoduWork 客户端。"
+        "blurb": "从企业软件源安装到当前用户的本机 Python 环境。",
+        "install_how": "在 Agent 管理中安装 Planning Harness。"
       }
     },
     {

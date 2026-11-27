@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 
-from ..agent_catalog import AGENTS, desktop_only
+from ..agent_catalog import HUB_AGENTS as AGENTS
 from ..automation_models import RunnerNode
 from ..conversation_handoff_models import ConversationHandoff as Handoff
 from ..models import Attachment, Client, OrgUnit, Task, User
@@ -362,7 +362,7 @@ async def committed_destination(session, client, options, source=None):
     assignee_id = str(options.get("assigneeId") or "").strip()
     parts = assignee_id.split(":", 2)
     runner_id = str(snapshot.get("runnerId") or (parts[1] if len(parts) == 3 else "")).strip()
-    if not runner_id or agent_id not in AGENTS or desktop_only(agent_id):
+    if not runner_id or agent_id not in AGENTS:
         raise HTTPException(409, "云端会话的原执行目标不完整，请重新选择执行机")
     runner = runner_hub.get(runner_id)
     if (not runner or not cloud_runner_allowed(runner.id, runner.client_id)
@@ -415,7 +415,7 @@ def clean_options(raw):
         raise HTTPException(409, "本地模型不能转交到其他执行机")
     # Keep old explicit requests byte-for-byte compatible for durable retry hashes.
     if "agentId" in raw:
-        if not isinstance(raw["agentId"], str) or raw["agentId"] not in AGENTS or desktop_only(raw["agentId"]):
+        if not isinstance(raw["agentId"], str) or raw["agentId"] not in AGENTS:
             raise HTTPException(422, "当前服务尚未配置此 Agent 的云端执行支持")
         out["agentId"] = raw["agentId"]
     if "targetRunnerId" in raw:
@@ -517,7 +517,7 @@ async def refresh(session, row):
     event = await ai_exec.last_dispatch_event(session, row.task_id)
     if not event:
         from ..models import TaskEvent
-        from . import dispatch_reconcile, task_events, execution_sessions
+        from . import dispatch_reconcile, execution_sessions, task_events
         latest = await session.scalar(select(TaskEvent).where(
             TaskEvent.task_id == row.task_id, TaskEvent.kind.in_(ai_exec.KINDS_DISPATCH_STATE))
             .order_by(TaskEvent.at.desc(), TaskEvent.id.desc()).limit(1))

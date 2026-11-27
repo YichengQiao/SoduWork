@@ -59,7 +59,7 @@ for (const runtime of catalog.runtimes()) test(runtime.id + (runtime.id === 'ai-
   const input = { requestId: crypto.randomUUID(), agentId: runtime.id, text: 'Calculate 17 + 25', model: runtime.modelMode === 'account' ? '' : 'model1',
     attachments: [{ name: 'input.md', type: 'text/markdown', data: Buffer.from('17 + 25') }] };
   if (runtime.id === 'ai-planning') {
-    await assert.rejects(cloud.start(input), /当前场景仅支持在本机运行/);
+    await assert.rejects(cloud.start(input), /Planning Harness 需要本机桌面授权/);
     assert.equal(f.starts(), 0);
     assert.deepEqual(f.requests, []);
     assert.deepEqual(await fs.readdir(f.root), []);

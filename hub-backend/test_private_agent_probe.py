@@ -177,6 +177,33 @@ class PrivateProbeRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(ready["data"]["accessControl"]["supported"])
             detect.assert_called_once_with("ai-planning", has_model=True)
 
+    async def test_planning_lifecycle_uses_the_local_settings_pipe(self):
+        machine = Runner.__new__(Runner)
+        machine._send = AsyncMock()
+        machine._report_beat = AsyncMock()
+        with patch.object(agent_setup, "_spawn"), patch.object(agent_setup, "start_install", wraps=agent_setup.start_install) as install:
+            no_owner = await machine._local_rpc_dispatch({"op": "agent.install", "key": "ai-planning", "action": "install"})
+            self.assertFalse(no_owner["ok"])
+            started = await machine._local_rpc_dispatch({"op": "agent.install", "key": "ai-planning", "action": "check",
+                                                         "ownerId": "synthetic-settings-owner"})
+            self.assertTrue(started["ok"], started)
+            jid = started["data"]["jobId"]
+            self.addCleanup(agent_setup._JOBS.pop, jid, None)
+            agent_setup._done(jid, True, "Synthetic installation check passed")
+            local = await machine._local_rpc_dispatch({"op": "agent.job", "jobId": jid, "ownerId": "synthetic-settings-owner"})
+            self.assertEqual((local["data"]["key"], local["data"]["action"], local["data"]["ok"]),
+                             ("ai-planning", "check", True))
+            for msg in ({"op": "agent.install", "key": "ai-planning"},
+                        {"op": "agent.job", "jobId": jid}):
+                await machine._on({**msg, "_localParent": True, "id": "remote"})
+                self.assertFalse(machine._send.await_args.args[0]["ok"])
+            other = await machine._local_rpc_dispatch({"op": "agent.install", "key": "qwen"})
+            self.assertFalse(other["ok"])
+            other_owner = await machine._local_rpc_dispatch({"op": "agent.job", "jobId": jid, "ownerId": "other-owner"})
+            self.assertFalse(other_owner["ok"])
+            install.assert_called_once_with("ai-planning", "check", owner_id="synthetic-settings-owner")
+            machine._report_beat.assert_not_awaited()
+
     async def test_network_marker_cannot_authorize_local_probe_or_configuration(self):
         machine = Runner.__new__(Runner)
         machine._send = AsyncMock()

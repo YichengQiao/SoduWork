@@ -19,8 +19,6 @@ function create(ctx) {
   return {
 async send(text, turnAttachments, sendOptions) {
       const turn = sendOptions || {};
-      const blocked = require('../agent-runtime/planning-scene.cjs').controlledTurnError(ctx.handle, turn);
-      if (blocked) return blocked;
       let deliveryResult = null;
       const queuedTurn = turn.fromQueue ? ctx.turnQueue.active() : null;
       const interrupted = () => Boolean(queuedTurn?.stopRequested);

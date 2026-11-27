@@ -1,7 +1,7 @@
 """Explicit consent for the one supported local-to-cloud Agent fallback."""
 from fastapi import HTTPException
 
-from ..agent_catalog import AGENTS, desktop_only
+from ..agent_catalog import AGENTS
 
 
 def clean_fallback(value):
@@ -9,7 +9,7 @@ def clean_fallback(value):
             or set(value) != {"fromAgentId", "toAgentId", "accepted"}
             or type(value.get("accepted")) is not bool or value["accepted"] is not True
             or not isinstance(value.get("fromAgentId"), str)
-            or value["fromAgentId"] not in AGENTS or value["fromAgentId"] == "pi" or desktop_only(value["fromAgentId"])
+            or value["fromAgentId"] not in AGENTS or value["fromAgentId"] == "pi"
             or value.get("toAgentId") != "pi"):
         raise HTTPException(400, "只有明确同意后，才能将当前 Agent 的会话转由云端 Pi 继续")
     return {"fromAgentId": value["fromAgentId"], "toAgentId": "pi", "accepted": True}
@@ -24,8 +24,6 @@ def validate(source, options, target_agent):
     """
     fallback = options.get("agentFallback")
     source_agent = (source or {}).get("adapterId")
-    if desktop_only(source_agent) or desktop_only(target_agent):
-        raise HTTPException(409, "此 Agent 的会话与文件只能在本机使用")
     if fallback is not None:
         fallback = clean_fallback(fallback)
         if (source_agent != fallback["fromAgentId"] or target_agent != "pi"

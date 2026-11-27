@@ -1174,11 +1174,7 @@ def fetch_attachment_sync(cfg: dict, att_id: str) -> bytes | None:
     """
     with _LOCK:
         runs = list(_RUNS.values())
-    from ..agent_catalog import desktop_execution
     for run in runs:
-        if desktop_execution(run):
-            # Local Planning artifacts require their authenticated, scoped ref.
-            continue
         p = _safe_work_file(run, att_id)
         if p:
             try:

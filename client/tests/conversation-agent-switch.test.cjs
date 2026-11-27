@@ -336,6 +336,27 @@ const options = f => ({ app: f.app, ref: 'chat-switch', cwd: f.root, identity: i
   resolvePlugins: async ids => ({ items: ids.map(pluginId => ({ pluginId, name: 'Meeting', context: 'Fixture plugin context' })) }) });
 async function send(handle, text) { const sent = handle.submit(text, [], {}); assert.equal(sent.accepted, true); const done = await sent.completion; assert.equal(done.ok, true, JSON.stringify(done)); }
 
+test('Planning uses its own tool boundary after a Pi switch and restores Pi resolvers when switching back', async t => {
+  const f = fixture(t), original = options(f);
+  t.mock.method(require('../main/conversation/requirement-context'), 'cachedIdentity', () => original.identity);
+  let connectorCalls = 0, pluginCalls = 0;
+  const resolveConnectors = async () => { connectorCalls++; return { servers: [] }; };
+  const resolvePlugins = async ids => { pluginCalls++; return original.resolvePlugins(ids); };
+  const { session } = await f.bridge.open({ ...original, activePluginIds: [], resolveConnectors, resolvePlugins });
+  assert.equal((await session.selectAgent('ai-planning')).ok, true);
+  const selected = session.submit('Run an explicit plugin', [], { pluginIds: ['meeting'] });
+  const rejected = await selected.completion;
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.reason, /Planning.*插件/);
+  assert.equal(f.requests.some(row => row.op === 'job.dispatch'), false);
+  await send(session, 'An ordinary Planning turn');
+  assert.deepEqual([connectorCalls, pluginCalls], [0, 0]);
+  assert.equal((await session.selectAgent('pi')).ok, true);
+  const pi = f.openings.at(-1);
+  assert.equal(pi.resolveConnectors, resolveConnectors);
+  assert.equal(pi.resolvePlugins, resolvePlugins);
+});
+
 test('switching Runner preserves an indexed image without expanding the new delivery', async t => {
   const f = fixture(t), runtime = require('../main/conversation/artifact-runtime');
   const handle = (await f.bridge.open({ ...options(f), adapterId: 'dsh' })).session;
@@ -457,57 +478,22 @@ async function waitIdle(handle) {
 
 for (const spec of catalog.runnerRuntimes()) test(spec.id + ': controlled receipts survive restart without claiming native admission', async t => {
   const f = fixture(t); f.strictMissing = true;
-  const pi = (await f.bridge.open(options(f))).session;
-  await send(pi, 'Requirement draft');
-  const selected = await pi.selectAgent(spec.id);
-  const planning = spec.id === 'ai-planning';
-  const scenes = require('../main/agent-runtime/planning-scene.cjs');
-  const actor = options(f).identity;
-  let handle = pi;
-  if (planning) {
-    assert.equal(selected.ok, false);
-    assert.match(selected.reason, /执行者已绑定/);
-    assert.equal(pi.adapterId, 'pi');
-    assert.equal(f.requests.filter(row => row.op === 'job.dispatch').length, 0);
-    t.mock.method(require('../main/conversation/requirement-context'), 'cachedIdentity', () => actor);
-    const business = await f.bridge.open({ ...options(f), identity: actor, ref: 'business-review', adapterId: scenes.adapter('business') });
-    assert.equal(business.ok, true, business.reason);
-    handle = business.session;
-    scenes.bind(f.app, actor, handle, 'business');
-    assert.equal(scenes.localOnly(handle), true);
-    assert.equal(scenes.restore(f.app, identity('bob'), handle.sessionId), '');
-    assert.equal((await handle.selectAgent('pi')).ok, false);
-    assert.equal(handle.adapterId, spec.id);
-  } else {
-    assert.equal(selected.ok, true);
-  }
+  if (spec.id === 'ai-planning') t.mock.method(require('../main/conversation/requirement-context'), 'cachedIdentity', () => options(f).identity);
+  const handle = (await f.bridge.open({ ...options(f), activePluginIds: [] })).session;
+  await send(handle, 'Requirement draft');
+  assert.equal((await handle.selectAgent(spec.id)).ok, true);
   const id = handle.sessionId;
   assert.equal(handle.bindTask('requirement', 'Existing requirement').ok, true);
   handle.appendTaskMessage('user', 'Execute the requirement', [], 'requirement', 'request');
   handle.appendTaskMessage('assistant', 'Completed delivery', [], 'requirement', 'result');
   handle.taskExecutionChanged({ taskId: 'requirement', status: 'completed' });
   await segments.flush(f.app, id);
-  const receipt = handle.historyRow();
-  const active = planning ? { sessionId: receipt.id, started: receipt.nativeSessionStarted } : segments.read(f.app, id).active;
+  const active = segments.read(f.app, id).active;
   assert.equal(active.started, false, 'task output is not a native dispatch acknowledgement');
-  const resume = (ref, started) => {
-    if (!planning) return f.bridge.open({ ...options(f), ref, runtimeConversationId: id });
-    const scene = scenes.restore(f.app, actor, id);
-    assert.equal(scene, 'business');
-    return f.bridge.open({ ...options(f), identity: actor, ref, adapterId: scenes.adapter(scene),
-      resumePath: id, nativeDispatchId: receipt.nativeDispatchId, nativeSessionStarted: started });
-  };
   await f.restart();
-  const reopened = await resume('review-reopen', false);
+  const reopened = await f.bridge.open({ ...options(f), ref: 'review-reopen', runtimeConversationId: id });
   assert.equal(reopened.ok, true, reopened.reason);
   await waitIdle(reopened.session);
-  if (planning) {
-    scenes.bind(f.app, actor, reopened.session, scenes.restore(f.app, actor, id));
-    const controlled = { execute: () => assert.fail('restored local sessions cannot invoke remote execution') };
-    const blocked = reopened.session.submit('Move to remote executor', [], { controlled });
-    assert.equal(blocked.accepted, false);
-    assert.match(blocked.result.reason, /本机/);
-  }
   assert.match(JSON.stringify(reopened.session.snapshot().messages), /Completed delivery/);
   assert.equal(f.requests.filter(row => row.op === 'job.dispatch').length, 0);
   const task = { id: 'requirement', title: 'Existing requirement', ownerClientId: 'test-device',
@@ -531,17 +517,12 @@ for (const spec of catalog.runnerRuntimes()) test(spec.id + ': controlled receip
   assert.doesNotMatch(starts[0].input.ctx.conversationUserText, /delivery-v1/);
   assert.ok(f.runs.has(active.sessionId), 'first dispatch retains the segment and its task-output journal');
   await f.restart();
-  const again = await resume('review-again', true);
+  const again = await f.bridge.open({ ...options(f), ref: 'review-again', runtimeConversationId: id });
   assert.equal(again.ok, true, again.reason);
   await waitIdle(again.session);
   await send(again.session, 'One explicit follow-up');
   assert.equal(f.requests.filter(row => row.op === 'job.dispatch').length, 1);
-  const comments = f.requests.filter(row => row.op === 'job.comment');
-  assert.equal(comments.length, 1);
-  if (planning) {
-    assert.deepEqual(comments[0].input.cfg.accessPolicy, starts[0].input.ctx.accessPolicy);
-    assert.notEqual(comments[0].input.cfg.planningHostGrant, starts[0].input.cfg.planningHostGrant);
-  }
+  assert.equal(f.requests.filter(row => row.op === 'job.comment').length, 1);
   allowed = false;
   const refused = again.session.submit(review.displayText, [], { beforeTurn: review.beforeTurn, promptText: review.text });
   assert.equal((await refused.completion).ok, false);

@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from ..agent_catalog import AGENTS, desktop_only
+from ..agent_catalog import HUB_AGENTS as AGENTS
 from ..automation_models import RunnerNode
 from ..config import get_settings
 from . import audit, conversation_handoffs, runner_enroll, runner_hub, runner_registry
@@ -135,8 +135,6 @@ def _available_agents(live_agents):
                  if isinstance(a, dict) and a.get("key")}
     rows = []
     for key, spec in sorted(AGENTS.items(), key=lambda pair: pair[1].get("order", 999)):
-        if desktop_only(key):
-            continue
         access = spec.get("accessControl") or {}
         runner = spec.get("runner") or {}
         install = spec.get("install") or {}

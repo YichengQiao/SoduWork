@@ -7,7 +7,6 @@ const { candidateVersion, GENERATED_VERSION_DIRECTORY } = require('./client-buil
 const ELECTRON_DATA_SIGN_IGNORE = String.raw`/Contents/Frameworks/Electron Framework\.framework/(?:Versions/(?:A|Current)/)?Resources/(?:[^/]+\.lproj/locale|resources|chrome_100_percent|chrome_200_percent)\.pak$`;
 
 function configuration({ env = process.env, profile = selected(env), base = require('../package.json').build } = {}) {
-  base = require('./prepare-planning.cjs').configuration(base, env);
   if (env.SODUWORK_RELEASE_HUB_URL) {
     const target = new URL(env.SODUWORK_RELEASE_HUB_URL);
     assert.ok(!target.username && !target.password && target.pathname === '/' && !target.search && !target.hash,
@@ -28,7 +27,7 @@ function configuration({ env = process.env, profile = selected(env), base = requ
     directories: { ...base.directories, output: 'dist/' + profile.distributionId },
     // Stage candidates must carry their beta number into the signed installer
     // identity. Formal release jobs resolve to the committed stable version.
-    extraMetadata: { ...base.extraMetadata, version: candidateVersion(env),
+    extraMetadata: { ...base.extraMetadata, ...require('../main/planning-index.cjs').buildMetadata(env), version: candidateVersion(env),
       name: internal ? 'soduwork' : profile.linuxPackageName,
       productName: profile.productName, homepage: profile.websiteUrl,
       desktopName: profile.linuxExecutableName + '.desktop', soduworkDefaultHubUrl: profile.hubOrigin,

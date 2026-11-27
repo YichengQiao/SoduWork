@@ -48,7 +48,6 @@ function fixture(options = {}) {
     _entryContextPrompts: () => [], _awaitBounded: options.bounded || (value => value), OPEN_TIMEOUT_MS: 45000,
     _bindUsage() {}, _attach() {}, _detach() {}, _clearRelease() {}, _wire() {}, _openReply: () => ({ ok: true }),
     require: name => {
-      if (name === '../agent-runtime/planning-scene.cjs') return require('../main/agent-runtime/planning-scene.cjs');
       if (name === '../conversation/history-access') {
         const actual = require(path.join(__dirname, '../main/pi-session', name));
         return { ...actual,

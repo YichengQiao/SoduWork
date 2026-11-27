@@ -1,0 +1,188 @@
+"""Offline enterprise index, per-user pip installation and ACP lifecycle checks."""
+import base64
+import csv
+import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from hashlib import sha256
+from pathlib import Path
+from unittest.mock import patch
+from zipfile import ZipFile
+
+from app.services import acp_agents, agent_setup
+from app.services import planning_install as install
+from app.services import planning_release as source
+
+
+def wheel(index, name, version, files=None):
+    module = name.replace("-", "_")
+    dist = f"{module}-{version}.dist-info"
+    data = dict(files or {})
+    data.update({
+        f"{dist}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\nAuthor: yicheng.qiao\n",
+        f"{dist}/WHEEL": "Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    })
+    data = {k: v.encode() for k, v in data.items()}
+    record = io.StringIO()
+    writer = csv.writer(record)
+    for key, raw in data.items():
+        digest = base64.urlsafe_b64encode(sha256(raw).digest()).decode().rstrip("=")
+        writer.writerow([key, "sha256=" + digest, len(raw)])
+    writer.writerow([dist + "/RECORD", "", ""])
+    data[dist + "/RECORD"] = record.getvalue().encode()
+    page = index / name
+    page.mkdir(parents=True, exist_ok=True)
+    target = page / f"{module}-{version}-py3-none-any.whl"
+    with ZipFile(target, "w") as archive:
+        for key, raw in data.items():
+            archive.writestr(key, raw)
+    (page / "index.html").write_text("".join(
+        f'<a href="{p.name}#sha256={sha256(p.read_bytes()).hexdigest()}">{p.name}</a>\n'
+        for p in page.glob("*.whl")), encoding="utf-8")
+    return sha256(target.read_bytes()).hexdigest()
+
+
+class ReleaseTests(unittest.TestCase):
+    def test_source_fallback_is_confined_to_an_unmanaged_source_session(self):
+        # Only the absolute interpreter supplied by start.sh may back a source installation.
+        source_env = {"SODUWORK_SOURCE_SESSION": "1", "SODUWORK_SOURCE_RUNNER_PYTHON": sys.executable}
+        with patch.dict(os.environ, source_env, clear=True), patch.object(install, "_run") as check:
+            self.assertEqual(install._bootstrap_python(), Path(sys.executable))
+            self.assertIn("源码", check.call_args.args[2])
+        for override in ({"SODUWORK_RUNTIME_MANAGED": "1"}, {"SODUWORK_SOURCE_SESSION": "0"},
+                         {"SODUWORK_MANAGED_PYTHON": "invalid-product-path"}):
+            with self.subTest(override=override), patch.dict(os.environ, {**source_env, **override}, clear=True):
+                with self.assertRaisesRegex(ValueError, "随附"):
+                    install._bootstrap_python()
+        with patch.dict(os.environ, {**source_env, "SODUWORK_SOURCE_RUNNER_PYTHON": "python"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "源码启动器"):
+                install._bootstrap_python()
+        with patch.dict(os.environ, source_env, clear=True), patch.object(
+                subprocess, "run", return_value=subprocess.CompletedProcess([], 1)) as probe:
+            with self.assertRaisesRegex(ValueError, "源码启动 Planning 需要使用 CPython 3.12"):
+                install._bootstrap_python()
+            self.assertIn("sys.version_info[:2] != (3,12)", probe.call_args.args[0][-1])
+        with patch.dict(os.environ, {**source_env, "SODUWORK_MANAGED_PYTHON": sys.executable}, clear=True), \
+                patch.object(install, "_run") as check:
+            self.assertEqual(install._bootstrap_python(), Path(sys.executable))
+            self.assertIn("随附", check.call_args.args[2])
+
+    def test_nexus_selects_latest_stable_without_following_yanked_or_foreign_candidates(self):
+        index = "https://nexus.example/repository/releases/simple/"
+        href = "https://nexus.example/repository/releases/assets/soduwork_planning_harness-0.10.0-py3-none-any.whl"
+        contents = (f'<a href="{href}#md5=old">latest</a>' +
+                    f'<a href="{href.replace("0.10.0", "0.9.0")}#sha256={"c" * 64}">old</a>' +
+                    f'<a data-yanked="" href="{href.replace("0.10.0", "1.0.0")}">retired</a>')
+        page = json.dumps({"items": [{"downloadUrl": href, "repository": "releases", "checksum": {"sha256": "a" * 64}}]})
+        with patch.dict(os.environ, {"SODUWORK_PLANNING_INDEX_URL": index}), patch.object(
+                source, "_read", side_effect=[contents, page]) as read:
+            self.assertEqual(source.latest(), source.Release("0.10.0", "a" * 64))
+            self.assertIn("/service/rest/v1/search/assets?repository=releases&", read.call_args.args[0])
+        with patch.dict(os.environ, {"SODUWORK_PLANNING_INDEX_URL": index}), patch.object(
+                source, "_read", return_value=contents.replace("nexus.example", "mirror.example")):
+            with self.assertRaisesRegex(ValueError, "其他来源"):
+                source.latest()
+
+    def test_credentials_never_enter_index_arguments(self):
+        for value in ["http://repo.example/simple", "https://user:example@repo.example/simple",
+                      "https://repo.example/simple?token=example"]:
+            with patch.dict(os.environ, {"SODUWORK_PLANNING_INDEX_URL": value}), self.assertRaisesRegex(ValueError, "HTTPS"):
+                source.index_url()
+        with patch.dict(os.environ, {"PIP_EXTRA_INDEX_URL": "https://untrusted.invalid", "PIP_TRUSTED_HOST": "bad.invalid"}):
+            env = install._environment()
+            self.assertNotIn("PIP_EXTRA_INDEX_URL", env)
+            self.assertNotIn("PIP_TRUSTED_HOST", env)
+            self.assertEqual(env["PIP_CONFIG_FILE"], os.devnull)
+
+    def test_management_jobs_require_the_same_desktop_owner_and_hide_credentials(self):
+        with patch.object(agent_setup, "_spawn"):
+            job = agent_setup.start_install("ai-planning", "install", owner_id="local-owner")
+        self.addCleanup(agent_setup._JOBS.pop, job, None)
+        self.assertIsNone(agent_setup.job(job, owner_id="local-owner"))
+        self.assertIsNone(agent_setup.job(job, owner_id="other", include_private=True))
+        result = agent_setup.job(job, owner_id="local-owner", include_private=True)
+        self.assertEqual((result["key"], result["action"]), ("ai-planning", "install"))
+
+
+@unittest.skipUnless(sys.implementation.name == "cpython" and sys.version_info[:2] == (3, 12),
+                     "fixture installs real wheels with the supported desktop CPython 3.12")
+class InstallationTests(unittest.TestCase):
+    def test_real_install_update_rollback_uninstall_and_running_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            private, public = work / "private", work / "public"
+            base = wheel(private, "mdiri-agent-base", "1.0.0", {"fixture_base.py": "OK = True"})
+            dep = wheel(public, "fixture-public", "1.0.0", {"fixture_public.py": "OK = True"})
+            # A public namesake cannot satisfy the private name.
+            wheel(public, "mdiri-agent-base", "1.0.0", {"fixture_base.py": "OK = False"})
+            def publish(version, broken=False):
+                launch = f'''import json, sys
+import fixture_base, fixture_public
+def main():
+    from pathlib import Path
+    import os
+    assert Path(os.environ['PLANNING_STATE_DIR']).is_absolute()
+    assert fixture_base.OK and fixture_public.OK
+    for line in sys.stdin:
+        req = json.loads(line)
+        reply = {{"id":req["id"], "jsonrpc":"2.0", "result":{{"protocolVersion":1,
+                 "agentInfo":{{"name":"planning-harness","version":{repr("wrong" if broken else version)}}}}}}}
+        print(json.dumps(reply),flush=True)
+if __name__ == "__main__":
+    main()
+'''
+                mod = source.MODULE
+                digest = wheel(private, source.NAME, version, {
+                    f"{mod}-{version}.dist-info/entry_points.txt": f"[console_scripts]\nplanning-harness = {mod}.launch:main\n",
+                    f"{mod}/__init__.py": "", f"{mod}/launch.py": launch,
+                    f"{mod}/manifest.json": json.dumps(dict(schema=1, protocolVersion=1, hostExtensionVersion=1,
+                                                            harnessId="ai-planning", distribution=source.NAME, version=version)),
+                    f"{mod}/requirements.lock": f"mdiri.agent_base==1.0.0 --hash=sha256:{base}\n"
+                                                f"fixture-public==1.0.0 --hash=sha256:{dep}\n",
+                })
+                return source.Release(version, digest)
+            release = publish("1.0.0")
+            def current():
+                return release
+            with patch.dict(os.environ, {"SODUWORK_DATA_ROOT": str(work / "data"), "SODUWORK_MANAGED_PYTHON": sys.executable}), \
+                    patch.object(source, "latest", side_effect=current), \
+                    patch.object(source, "index_url", side_effect=lambda public=False: (work / ("public" if public else "private")).as_uri()):
+                self.assertIn("未安装", install.install("check", lambda _: None))
+                with patch.dict(os.environ, {"SODUWORK_MANAGED_PYTHON": "", "SODUWORK_RUNTIME_MANAGED": "0",
+                                             "SODUWORK_SOURCE_SESSION": "1", "SODUWORK_SOURCE_RUNNER_PYTHON": sys.executable}):
+                    install.install("install", lambda _: None)
+                console, version = install.installation()
+                self.assertEqual(version, "1.0.0")
+                cmd = [*acp_agents.executable_command("ai-planning", console), "acp"]
+                env = {**os.environ, "PLANNING_STATE_DIR": str(work / "runtime-state")}
+                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env)
+                try:
+                    initialize = '{"jsonrpc":"2.0","id":1,"method":"initialize"}\n'
+                    proc.stdin.write(initialize)
+                    proc.stdin.flush()
+                    self.assertEqual(json.loads(proc.stdout.readline())["result"]["agentInfo"]["version"], version)
+                    second = subprocess.run(cmd, input=initialize, text=True, capture_output=True,
+                                            env=env, check=True, timeout=15)
+                    self.assertEqual(json.loads(second.stdout)["result"]["agentInfo"]["version"], version)
+                    for operation in ("uninstall", "update"):
+                        with self.assertRaisesRegex(ValueError, "正在运行"):
+                            install.install(operation, lambda _: None)
+                finally:
+                    proc.stdin.close()
+                    proc.wait(timeout=15)
+                    proc.stdout.close()
+                release = publish("1.1.0", broken=True)
+                with self.assertRaisesRegex(ValueError, "ACP"):
+                    install.install("update", lambda _: None)
+                self.assertEqual(install.installation(), (console, version))
+                release = publish("1.2.0")
+                install.install("update", lambda _: None)
+                self.assertEqual(install.installation()[1], "1.2.0")
+                self.assertFalse(Path(console).exists())
+                install.install("uninstall", lambda _: None)
+                self.assertEqual(install.installation(), ("", ""))
+                self.assertEqual(list((install.root() / "versions").iterdir()), [])

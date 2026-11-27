@@ -213,8 +213,6 @@ selectModel(name) {
     },
 setThinkingMode(enabled) { const result = thinkingCapabilities.set(ctx.piSession, enabled); if (result.ok) ctx._emit({ kind: 'thinking-level', level: result.thinking.level }); return result; },
 submit(text, turnAttachments, sendOptions) {
-      const blocked = require('../agent-runtime/planning-scene.cjs').controlledTurnError(ctx.handle, sendOptions);
-      if (blocked) return { accepted: false, result: blocked, completion: Promise.resolve(blocked) };
       const rawText = String(text || '');
       if (!rawText.trim()) {
         return { accepted: false, result: { ok: false, reason: '空消息' } };

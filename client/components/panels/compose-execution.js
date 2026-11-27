@@ -15,7 +15,6 @@
       const button = event.target.closest('[data-execution]');
       if (button && !button.disabled && !busy) {
         const next = button.dataset.execution;
-        if (next === 'cloud' && global.ComposeRuntime?.localOnly?.()) return;
         if (!['local', 'cloud'].includes(next) || next === location) return;
         if (location !== next) revision++;
         location = next;
@@ -59,7 +58,7 @@
     global.WorkComposer?.syncExecutionMenu?.(panelRoot, location, busy, ownerScope());
     panelRoot.querySelectorAll('[data-execution]').forEach(button => {
       const selected = button.dataset.execution === location;
-      button.setAttribute('aria-checked', String(selected)); button.setAttribute('aria-pressed', String(selected)); button.classList.toggle('on', selected); button.disabled = busy || (button.dataset.execution === 'cloud' && global.ComposeRuntime?.localOnly?.() === true);
+      button.setAttribute('aria-checked', String(selected)); button.setAttribute('aria-pressed', String(selected)); button.classList.toggle('on', selected); button.disabled = busy;
     });
   }
 

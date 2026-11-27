@@ -8,7 +8,7 @@ import threading
 import uuid
 from collections import OrderedDict
 
-from ..agent_catalog import AGENTS, desktop_only
+from ..agent_catalog import HUB_AGENTS as AGENTS
 from . import (
     agent_naming,
     artifact_bytes,
@@ -26,7 +26,7 @@ _DISPATCH_TIMEOUT = 120.0        # Allow extra time for dispatch to create a ses
 _INPUT_CHUNK = 512 * 1024         # The encoded chunk remains below the WebSocket frame-size limit.
 _OUTPUT_CHUNK = 512 * 1024
 
-_ACTIVE_AGENT_KEYS = frozenset(key for key in AGENTS if not desktop_only(key))
+_ACTIVE_AGENT_KEYS = frozenset(AGENTS)
 
 # A local model is resolved from the Runner's encrypted local catalog.  When a
 # remote Runner response is relayed through Hub, keep that model reference on

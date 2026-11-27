@@ -42,15 +42,15 @@ def _regular(path):
 def command():
     from .planning_host import child_environment
     python = Path(os.environ.get("SODUWORK_MANAGED_PYTHON", ""))
-    launcher = Path(os.environ.get("SODUWORK_PLANNING_LAUNCHER", ""))
     skill = Path(os.environ.get("SODUWORK_PLANNING_WORKBOOK", ""))
-    resources = launcher.parent.parent
+    layout = Path("python/python.exe" if os.name == "nt" else "python/bin/python3")
+    if not python.is_absolute() or len(python.parents) < len(layout.parts):
+        return None
+    resources = python.parents[len(layout.parts) - 1]
     expected = resources / "skills" / "office" / "scripts" / "planning_workbook.py"
-    if (not all(p.is_absolute() for p in (python, launcher, skill))
-            or launcher != resources / "planning" / "launch.py"
-            or python not in (resources / "python/python.exe", resources / "python/bin/python3")
-            or skill != expected or not _regular(skill) or not _regular(launcher)
-            or not _regular(skill.with_name("inspect_office.py")) or not python.is_file()):
+    if (python != resources / layout or not python.is_file()
+            or not python.resolve().is_relative_to(resources / "python")
+            or skill != expected or not _regular(skill) or not _regular(skill.with_name("inspect_office.py"))):
         return None
     argv = [str(python), "-I", "-B", "-u", str(skill)]
     try:

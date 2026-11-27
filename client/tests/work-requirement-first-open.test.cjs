@@ -49,7 +49,6 @@ function ipcFixture({ app, bridge, owner, cwd, task, legacy = false }) {
     _bindUsage() {}, _attach() {}, _detach() {}, _wire() {}, _cloudHandoff: { observe() {} },
     _openReply: (handle, extra) => openReply(app, handle, extra),
     require: name => {
-      if (name === '../agent-runtime/planning-scene.cjs') return require('../main/agent-runtime/planning-scene.cjs');
       const actual = require(path.join(__dirname, '../main/pi-session', name));
       if (name !== '../conversation/history-access') return actual;
       return { ...actual, actor: (app, identity = owner) => actual.actor(app, identity),

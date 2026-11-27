@@ -22,11 +22,9 @@ assert.ok(descriptor.capabilities.some((item) => item.id === CAPABILITIES.GOAL_C
 const planning = loadCatalog().runtime('ai-planning');
 assert.equal(planning.displayName, 'Planning Harness');
 assert.equal(planning.transport, 'runner');
-const installedPlanning = require('node:fs').existsSync(
-  path.join(__dirname, '..', '.runtime', 'planning', 'manifest.json'));
-const selectableRuntimes = ['pi', 'codex-harness', 'opencode', 'codex', 'qwen', 'dsh', 'kimi'];
-if (installedPlanning) selectableRuntimes.splice(1, 0, planning.id);
-assert.deepEqual(RUNTIMES.map((item) => item.id), selectableRuntimes);
+assert.deepEqual(RUNTIMES.map((item) => item.id), [
+  'pi', 'ai-planning', 'codex-harness', 'opencode', 'codex', 'qwen', 'dsh', 'kimi',
+]);
 RUNTIMES.filter((item) => item.transport === 'runner').forEach((runtimeSpec) => {
   const runner = validateAdapter(createRunnerRuntimeAdapter({ runtimeSpec }));
   assert.equal(runner.id, runtimeSpec.id);

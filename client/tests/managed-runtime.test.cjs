@@ -42,28 +42,20 @@ test('Windows PATH aliases and stale Python overrides cannot bypass a missing pr
   assert.equal(env.SODUWORK_MANAGED_PYTHON, undefined);
   assert.deepEqual(require('../main/conversation/office-engine').pythonCandidates(env, 'win32'), []);
 });
-test('only the managed interpreter and adjacent Planning extension supply the launcher', () => {
-  const base = { soduwork_planning_launcher: 'C:\\host\\foreign.py', soduwork_managed_python: 'foreign' };
-  assert.deepEqual(environment(base), { soduwork_managed_python: 'foreign' });
-  const options = { platform: 'win32', resourcesPath: 'C:\\app', exists: () => true };
-  const env = environment(base, options);
-  assert.equal(env.SODUWORK_PLANNING_LAUNCHER, 'C:\\app\\planning\\launch.py');
-  assert.equal(env.soduwork_planning_launcher, undefined);
-  assert.equal(env.SODUWORK_PLANNING_WORKBOOK, require('node:path').win32.join('C:/app', 'skills', 'office', 'scripts', 'planning_workbook.py'));
-  assert.equal(env.soduwork_managed_python, undefined);
-  assert.equal(environment(base, { ...options, exists: () => false }).SODUWORK_PLANNING_LAUNCHER, undefined);
-});
-test('Planning distribution requires both a release artifact and its expected digest', () => {
-  const { configuration } = require('../scripts/prepare-planning.cjs');
-  const base = { extraResources: [], extraMetadata: { example: 1 } };
-  assert.equal(configuration(base, {}), base);
-  const bundle = { SODUWORK_PLANNING_WHEEL: require('node:path').resolve('soduwork_planning_harness-0.2.0-py3-none-any.whl') };
-  assert.throws(() => configuration(base, bundle));
-  const result = configuration(base, { ...bundle, SODUWORK_PLANNING_SHA256: 'ab'.repeat(32) });
-  assert.deepEqual(result.extraMetadata, { example: 1, soduworkPlanningHarness: {
-    id: 'ai-planning', distribution: 'soduwork-planning-harness', version: '0.2.0',
-  } });
-  assert.throws(() => configuration(base, { SODUWORK_PLANNING_BUNDLE: require('node:path').resolve('old.zip'),
-    SODUWORK_PLANNING_SHA256: 'ab'.repeat(32) }));
-  assert.equal(result.extraResources[0].to, 'planning');
+
+test('Planning installs from signed package indexes and uses the product Office helper', () => {
+  const { buildMetadata, applyMetadata } = require('../main/planning-index.cjs');
+  const name = 'SODUWORK_PLANNING_INDEX_URL';
+  const registry = 'https://packages.example.test/repository/python/simple/';
+  const metadata = buildMetadata({ [name]: registry });
+  const env = environment({ [name.toLowerCase()]: 'https://untrusted.example.test/' },
+    { platform: 'linux', resourcesPath: '/product', exists: () => true });
+  applyMetadata(env, metadata.soduworkPlanningIndexes);
+  assert.equal(env[name], registry);
+  assert.equal(env[name.toLowerCase()], undefined);
+  assert.equal(env.SODUWORK_PLANNING_WORKBOOK, '/product/skills/office/scripts/planning_workbook.py');
+  assert.deepEqual(buildMetadata({}), {});
+  for (const invalid of ['http://packages.example.test', 'https://user@packages.example.test', registry + '?token=x']) {
+    assert.throws(() => buildMetadata({ [name]: invalid }));
+  }
 });

@@ -71,7 +71,6 @@ function source(handle) {
 }
 
 function assertPortable(handle) {
-  if (require('../agent-runtime/planning-scene.cjs').localOnly(handle)) throw Error('当前场景已绑定本机执行');
   const snapshot = handle.snapshot();
   const selectedName = String(snapshot.modelSelection?.name || '').trim();
   const image = require('../../core/model-choice').imageChoice(selectedName);
@@ -412,7 +411,8 @@ function create({ app, identityOf, request = http, workspace = portable, notify 
     const current = await identity(null, handle);
     const origin = source(handle), cwd = handle.cwd, agentId = origin.adapterId || 'pi';
     const [snapshot, matching] = await Promise.all([
-      workspace.scan(cwd), request(current, '/conversation-handoffs/targets?agentId=' + encodeURIComponent(agentId)),
+      workspace.scan(cwd), agentId === 'ai-planning' ? { targets: [] }
+        : request(current, '/conversation-handoffs/targets?agentId=' + encodeURIComponent(agentId)),
     ]);
     let targets = matching, fallback = null;
     if (!matching.targets?.length && agentId !== 'pi') {

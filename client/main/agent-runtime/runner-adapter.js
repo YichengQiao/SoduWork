@@ -2001,8 +2001,6 @@ async function createRunnerHandle(request, defaults, initialSession) {
       return { ok: true, thinking: { ...next, levels: next.levels.slice() } };
     },
     submit(text, attachments, options) {
-      const blocked = require('./planning-scene.cjs').controlledTurnError(handle, options);
-      if (blocked) return { accepted: false, result: blocked, completion: Promise.resolve(blocked) };
       const value = String(text ?? '');
       if (!value.trim()) return { accepted: false, result: { ok: false, reason: '请输入内容' } };
       if (value.length > 50000) return { accepted: false, result: { ok: false,

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
-from ..agent_catalog import AGENTS, desktop_only
+from ..agent_catalog import HUB_AGENTS as AGENTS
 from ..config import get_settings
 from ..conversation_handoff_models import ConversationHandoff as Handoff
 from ..models import Attachment, Task
@@ -43,7 +43,7 @@ def clean_options(raw, has_files=False):
         out[key] = value.strip()
     if not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", out["sessionId"]):
         raise HTTPException(400, "云端会话编号格式不正确")
-    if out["agentId"] not in AGENTS or desktop_only(out["agentId"]):
+    if out["agentId"] not in AGENTS:
         raise HTTPException(422, "当前服务尚未配置此 Agent 的云端执行支持")
     if is_local_model_reference(out["model"]):
         raise HTTPException(409, "本地模型只能在本机使用，不能用于云端会话")

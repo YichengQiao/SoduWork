@@ -8,7 +8,7 @@ const path = require('node:path');
 function environment(base, { resourcesPath, platform = process.platform, exists = fs.existsSync } = {}) {
   const env = { ...base };
   for (const key of Object.keys(env)) {
-    if (/^SODUWORK_PLANNING_(LAUNCHER|WORKBOOK)$/i.test(key)) delete env[key];
+    if (/^SODUWORK_PLANNING_WORKBOOK$/i.test(key)) delete env[key];
   }
   if (!resourcesPath) return env;
   env.SODUWORK_RUNTIME_MANAGED = '1';
@@ -25,14 +25,10 @@ function environment(base, { resourcesPath, platform = process.platform, exists 
     dirs.push(pythonDir);
     env.SODUWORK_MANAGED_PYTHON = python;
     env.SODUWORK_OFFICE_PYTHON = python;
-    const launcher = p.join(resourcesPath, 'planning', 'launch.py');
-    if (exists(launcher) && exists(p.join(resourcesPath, 'planning', 'manifest.json'))) {
-      env.SODUWORK_PLANNING_LAUNCHER = launcher;
-      const scripts = p.join(resourcesPath, 'skills', 'office', 'scripts');
-      const workbook = p.join(scripts, 'planning_workbook.py');
-      if (exists(workbook) && exists(p.join(scripts, 'inspect_office.py'))) {
-        env.SODUWORK_PLANNING_WORKBOOK = workbook;
-      }
+    const scripts = p.join(resourcesPath, 'skills', 'office', 'scripts');
+    const workbook = p.join(scripts, 'planning_workbook.py');
+    if (exists(workbook) && exists(p.join(scripts, 'inspect_office.py'))) {
+      env.SODUWORK_PLANNING_WORKBOOK = workbook;
     }
   }
   if (platform === 'win32' && exists(p.join(resourcesPath, 'shell', 'bin', 'bash.exe'))) {
@@ -65,17 +61,11 @@ function runtimeRoot(app, resourcesPath = process.resourcesPath) {
 function initialize(app, env = process.env, resourcesPath = process.resourcesPath) {
   const root = runtimeRoot(app, resourcesPath);
   const prepared = environment(env, { resourcesPath: root });
+  if (app?.isPackaged) {
+    require('./planning-index.cjs').applyMetadata(prepared, require('../package.json').soduworkPlanningIndexes);
+  }
   for (const key of Object.keys(env)) if (!(key in prepared)) delete env[key];
   Object.assign(env, prepared);
 }
 
-function planningEnabled(app) {
-  if (app?.isPackaged) {
-    const metadata = require('../package.json');
-    return metadata.soduworkPlanningHarness?.id === 'ai-planning' || metadata.soduworkPlanningAcp === true;
-  }
-  const source = app?.getAppPath?.();
-  return Boolean(source && fs.existsSync(path.join(source, '.runtime', 'planning', 'manifest.json')));
-}
-
-module.exports = { environment, initialize, runtimeRoot, planningEnabled };
+module.exports = { environment, initialize, runtimeRoot };

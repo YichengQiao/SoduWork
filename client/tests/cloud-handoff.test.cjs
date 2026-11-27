@@ -121,9 +121,10 @@ test('portable Agent adapters hand off actual files while Planning stays on this
     const f = await fixture(t, adapter.id);
     if (adapter.id === 'ai-planning') {
       f.handle.running = true;
-      await assert.rejects(f.input(), /当前场景已绑定本机执行/);
+      const preview = await f.cloud.preview(f.handle);
+      assert.deepEqual(preview.targets, []);
       assert.equal(f.handle.inFlight(), true);
-      assert.deepEqual(f.requestedRoutes, []);
+      assert.deepEqual(f.requestedRoutes, ['/conversation-handoffs/targets?agentId=pi']);
       assert.equal(f.starts, 0);
       return;
     }

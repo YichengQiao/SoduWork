@@ -44,7 +44,6 @@ function fixture(t) {
     session: { get: ref => ref === handle.ref ? handle : null },
     sendIdentityOf: async () => identity, identityOf: async () => identity,
     memories: { assertOwner() {} }, updateWorkloads: { guard: () => ({ ok: true }) },
-    planningScene: require('../main/agent-runtime/planning-scene.cjs'),
     _cloudHandoff: { guard: () => false }, workDir: () => root, startReceipts: {},
     firstTurnTitle: { prepare: () => null, accepted() {} },
     taskInput: { request: async () => task, prepare: async (owner, id, chat, submission, text, requested, runtime) => {

@@ -738,14 +738,17 @@ class Runner:
             store = await self._conversation_content_store(message.get("realm"))
             return await runner_local_rpc.to_thread(store.handle, {**message, "op": "content.read"})
         op = str(message.get("op") or "")
-        if op in {"agent.probe", "agent.job"}:
+        if op in {"agent.probe", "agent.job"} or (op == "agent.install" and message.get("key") == "ai-planning"):
+            if op == "agent.install" and not message.get("ownerId"):
+                return {"ok": False, "error": "请从当前账号的本机 Agent 管理中操作"}
             if op == "agent.probe" and dict(message.get("llm") or {}).get("localOnly") is not True:
                 return {"ok": False, "error": "本机测试通道只接受本地模型配置"}
             return await self._agent({**message, "_localParent": True})
         if op == "planning.host.reply":
             pipe = getattr(self, "_planning_host", None)
             return pipe.reply(message) if pipe else {"ok": False}
-        if op in {"job.dispatch", "job.comment", "job.authorize"} and not hasattr(self, "_planning_host"):
+        if (op in {"job.dispatch", "job.comment", "job.authorize"} and (message.get("cfg") or {}).get("planningHostGrant")
+                and not hasattr(self, "_planning_host")):
             from app.services import planning_host
             from app.services.runner_desktop_capabilities import DesktopCapabilities
             self._planning_host = DesktopCapabilities(self._write_local_rpc, kind="planning-host")
@@ -1612,26 +1615,18 @@ class Runner:
                     "error": str(result.get("error") or "")}
         from app.services import ai_local, runner_usage_receipts
 
-        from app.agent_catalog import desktop_execution, desktop_only
-        if not m.get("_localParent"):
-            ref = str(m.get("ref") or "")
+        if not m.get("_localParent") and op in {"job.dispatch", "job.comment", "job.authorize"}:
             cfg = m.get("cfg") or {}
-            selection = m.get("executionSelection")
-            selected_cli = selection.get("agentId") if isinstance(selection, dict) else None
-            if op == "job.dispatch":
-                from app.services.dispatch_identity import execution_ref
-                ref = execution_ref(m.get("dispatchId"))
-            with ai_local._LOCK:
-                private = desktop_execution(ai_local._RUNS.get(ref) or {})
-            admission = getattr(self, "_admission", None)
-            item = admission.latest_for_ref(ref) if admission and ref and not private else None
-            queued = (item.payload or {}) if item else {}
-            queued_cli = queued.get("cli") or (queued.get("cfg") or {}).get("local_cli")
-            if (private or any(desktop_only(cli) for cli in (m.get("cli"), cfg.get("local_cli"),
-                    selected_cli, queued_cli))
-                    or any(k in cfg for k in ("planningHostGrant", "planningExecutionId", "planningOwnerId"))):
+            selection = m.get("executionSelection") or {}
+            cli = selection.get("agentId") if isinstance(selection, dict) else None
+            if op != "job.dispatch" and not cli:
+                with ai_local._LOCK:
+                    cli = (ai_local._RUNS.get(str(m.get("ref") or "")) or {}).get("cli")
+            if ("ai-planning" in (cli, cfg.get("local_cli"), m.get("cli"))
+                    or "planningHostGrant" in cfg):
                 return {"ok": False, "code": "DESKTOP_AGENT_REQUIRED",
-                        "error": "Planning 会话只接受本机 SoduWork 私有通道"}
+                        "error": "Planning 运行需要本机 SoduWork 授权"}
+
         def remote_snapshot(data, ref):
             if m.get("_localParent"):
                 return data
@@ -2088,6 +2083,10 @@ class Runner:
             private = bool(m.get("_localParent"))
             job = await runner_local_rpc.to_thread(agent_setup.job, job_id,
                 owner_id=str(m.get("ownerId") or ""), **({"include_private": True} if private else {}))
+            if job is not None and job.get("key") == "ai-planning":
+                # This installation belongs to the desktop settings panel.
+                return ({"ok": True, "data": job} if private else
+                        {"ok": False, "error": "没有这个作业（runner 可能重启过）"})
             if job is not None and job.get("private"):
                 return {"ok": True, "data": job}
             if (job is not None and job.get("state") == "done"
@@ -2125,8 +2124,9 @@ class Runner:
                 env = await runner_local_rpc.to_thread(agent_setup.node_env, key)
                 if not env.get("ok"):
                     return {"ok": False, "error": env.get("why") or "这台电脑没有 Node.js"}
+            owned = key == "ai-planning" or action.startswith("login")
             jid = await runner_local_rpc.to_thread(agent_setup.start_install, key, action,
-                **({"owner_id": str(m.get("ownerId") or "")} if action.startswith("login") else {}))
+                **({"owner_id": str(m.get("ownerId") or "")} if owned else {}))
             return {"ok": True, "data": {"jobId": jid}}
         if op == "agent.probe":
             private = bool(m.get("_localParent") and llm.get("localOnly") is True)
