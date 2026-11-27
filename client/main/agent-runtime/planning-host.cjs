@@ -33,8 +33,10 @@ function issue({ app, identity, currentIdentity, runId, cwd, model, operation, i
   // The login token can renew or expire mid-response. Capture the accounting
   // scope while the grant is issued so late usage stays with the original owner.
   const billingScope = usageListener && !onUsage ? require('../conversation/runtime-segments').scope(current) : '';
+  // Match the native realpath used for incoming requests, including Windows 8.3 aliases.
+  const workspace = fs.realpathSync.native(cwd);
   const record = { ownerId, executionId, streamEnabled, streams: new Map(), billingScope,
-    billingIdentity: { hub: current.hub, clientId: current.clientId }, inputDigest, revision: policy.revision, mode: policy.mode, currentPolicy, runId, model, cwd: fs.realpathSync(cwd), app, currentIdentity, controller, fetchImpl, onUsage, modelCalls: new Set() };
+    billingIdentity: { hub: current.hub, clientId: current.clientId }, inputDigest, revision: policy.revision, mode: policy.mode, currentPolicy, runId, model, cwd: workspace, app, currentIdentity, controller, fetchImpl, onUsage, modelCalls: new Set() };
   grants.set(grant, record);
   return {
     config: { ...(streamEnabled ? { planningModelStream: true } : {}), planningHostGrant: grant, planningOwnerId: ownerId, planningExecutionId: executionId },

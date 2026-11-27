@@ -61,6 +61,17 @@ function fixture(t) {
   };
   return { dir, cwd, app, identity, model, options, issue };
 }
+test('Planning authorizes alternate Windows spellings of the same workspace', { skip: process.platform !== 'win32' }, async t => {
+  const f = fixture(t);
+  const alias = path.join(f.dir, 'WORK');
+  if (!fs.existsSync(alias)) return t.skip('The temporary directory is case-sensitive');
+  const access = f.issue({ cwd: alias });
+  fs.writeFileSync(path.join(f.cwd, 'input.txt'), 'fixture');
+  const read = { operation: 'read', path: 'input.txt' };
+  assert.deepEqual(await access.request('fs.authorize', read), { authorized: true });
+  await assert.rejects(access.request('fs.authorize', read, { workspace: f.dir }), /工作区与本机授权不匹配/);
+});
+
 test('Planning tickets stay in Electron and only the issued model endpoint receives a request', async t => {
   const f = fixture(t); let called = 0, usage;
   const access = f.issue({ onUsage: u => { usage = u; }, fetchImpl: async (url, options) => {

@@ -819,7 +819,7 @@ for (const runtimeSpec of runtimeCatalog.runnerRuntimes()) {
       } else if (planning) {
         assert.equal(modelFetches, 1);
         assert.deepEqual(dispatched.cfg.llm, { model: 'enterprise-model' });
-        assert.equal(dispatched.cfg.accessPolicy.workspaceRoot, root);
+        assert.equal(dispatched.cfg.accessPolicy.workspaceRoot, fs.realpathSync.native(root));
         assert.equal(dispatched.cfg.accessPolicy.mode, 'standard');
         assert.ok(dispatched.cfg.planningHostGrant);
         assert.ok(dispatched.cfg.planningOwnerId);
