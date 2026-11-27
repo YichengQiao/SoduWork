@@ -2019,13 +2019,15 @@
         .filter(function (row) { return /^local:model-[a-f0-9]{32}$/.test(row.name); });
       var hasLocalModel = localRows.length > 0;
       // This harness is managed by the desktop's private Runner, including when missing.
-      var planning = await global.soduWorkAPI?.planningHarness?.({ action: 'status' }).catch(() => null);
+      var [planning, inventory] = await Promise.all([
+        global.soduWorkAPI?.planningHarness?.({ action: 'status' }).catch(() => null),
+        jfetch('/runners', { taskScope: requestScope }),
+      ]);
+      inventory = inventory || {};
       currentRequest();
       function bindPlanning(runnerId) {
         planningManagement = planning ? { owner: planning.owner, scope: requestScope, runnerId: runnerId } : null;
       }
-      var inventory = await jfetch('/runners', { taskScope: requestScope }) || {};
-      currentRequest();
       async function unavailable() {
         if (planning) {
           var machine = { runnerId: 'desktop:planning', scope: 'current-instance', isCurrentDevice: true,

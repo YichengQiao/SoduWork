@@ -411,7 +411,6 @@ def detect(key: str, *, has_model: bool = True, probes: dict | None = None) -> d
     if key == "dsh" and setup_state == "missing":
         from .agent_installation import dsh_desktop_detected
         agent["desktopAppDetected"] = dsh_desktop_detected()
-    result = _decorate_agent(agent)
     if key == "ai-planning":
         from .planning_release import index_url
         try:
@@ -419,12 +418,12 @@ def detect(key: str, *, has_model: bool = True, probes: dict | None = None) -> d
             issue = ""
         except ValueError as exc:
             issue = str(exc)
-        result.update(installer="python", canProbe=False, canConfigure=False, modelPick=False,
-                      probeReason="请在本机业务会话中使用企业模型授权", installSourceConfigured=not issue,
+        agent.update(installer="python", canProbe=False, canConfigure=False, modelPick=False,
+                      probeReason="请在本机 Planning 会话中使用企业模型授权", installSourceConfigured=not issue,
                       installSourceIssue=issue)
         if issue and not installed:
-            result["why"] = issue
-    return result
+            agent["why"] = issue
+    return _decorate_agent(agent)
 
 
 def _config_ready(key: str) -> bool:
@@ -589,8 +588,8 @@ def _stream(jid: str, argv: list[str], *, cwd: str | None = None, env: dict | No
 
 # ---- Install / uninstall / update ----
 def can_uninstall(key: str) -> bool:
-    """Bundled runtimes are repaired and removed with their desktop distribution."""
-    return key in _SPECS and key != "pi" and _SPECS[key].get("installer") != "bundled" and not is_bundled(key)
+    """Pi is required even when its bundled payload is absent or being repaired."""
+    return key in _SPECS and key != "pi" and not is_bundled(key)
 
 
 def start_install(key: str, action: str, *, owner_id: str = "") -> str:
@@ -635,7 +634,7 @@ def start_install(key: str, action: str, *, owner_id: str = "") -> str:
                   "无需单独安装，升级 SoduWork 时会一起升级。")
         return jid
     spec = _SPECS.get(key) or {}
-    if spec.get("installer") in {"bundled", "manual"}:
+    if spec.get("installer") == "manual":
         _done(jid, False, str(spec.get("install_how") or
                               "Install this Agent in an isolated Runner environment, then retry detection."))
         return jid
