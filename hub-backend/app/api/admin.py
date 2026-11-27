@@ -3,6 +3,7 @@ device management. Superusers see all records; other users see their department 
 unassigned devices. Client.user_ref determines device ownership.
 """
 import logging
+import re
 import uuid
 from datetime import date as calendar_date
 from datetime import datetime, timedelta, timezone
@@ -19,7 +20,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import StreamingResponse
-from pydantic import AwareDatetime
+from pydantic import AwareDatetime, HttpUrl, ValidationError
 from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1637,6 +1638,46 @@ async def get_model_catalog(session: AsyncSession = Depends(get_session)):
     return await model_catalog.catalog(session)
 
 
+def _provider_base_url(value, kind, previous, allow_root):
+    def error(code, detail):
+        return HTTPException(400, detail, headers={"X-Error-Code": "model.provider.base-url." + code})
+
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise error("invalid", "接口地址必须是文本")
+    base = value.strip()
+    # Keep an existing route usable for unrelated edits, including full-form saves.
+    if previous and previous.kind == kind and base == previous.base_url.strip():
+        return previous.base_url
+    if not base:
+        return ""
+    if len(base) > 400:
+        raise error("invalid", "接口地址最多 400 个字符，请核对服务基础地址")
+    invalid = error("invalid", "请填写有效的 http(s) 服务基础地址，移除账号、查询参数和片段")
+    # URL parsers normalize empty ports, dot segments and malformed separators;
+    # the stored string is used directly when the Hub appends operation paths.
+    authority = re.match(r"https?://([^/]+)", base)
+    if (not authority or "@" in authority[1] or authority[1].endswith(":")
+            or re.search(r"[\s\x00-\x1f\x7f\\?#]", base)
+            or re.search(r"/(?:\.|%2e){1,2}(?:/|$)", base, re.I)):
+        raise invalid
+    try:
+        url = HttpUrl(base)
+    except ValidationError:
+        raise invalid from None
+    if url.port == 0:
+        raise invalid
+    path = (url.path or "").rstrip("/")
+    # Some compatible gateways use /models as their base (e.g. Azure AI Foundry).
+    if path.endswith(("/chat/completions", "/v1/responses", "/v1/models", "/v1/messages")):
+        raise error("operation", "请移除具体的操作名（如 chat/completions 或 models），只填写服务基础地址")
+    if kind != "anthropic" and not path and allow_root is not True:
+        raise error("root", "当前仅填写了主机地址。通常需要添加 /v1（如 https://gateway.example.com/v1）；"
+                    "若服务明确使用根地址，请确认使用根地址（allowRootBaseUrl: true）")
+    return base
+
+
 @router.put("/model-providers/{pid}")
 async def put_model_provider(
     pid: str,
@@ -1653,6 +1694,11 @@ async def put_model_provider(
     if len(new_key) > 400:
         raise HTTPException(status_code=400, detail="模型服务密钥最多 400 个字符，原密钥未更改")
     p = await model_config_guard.catalog(session, ModelProvider, pid, body.get("expectedRevision"))
+    kind = p.kind if p else "openai-compat"
+    if "kind" in body:
+        kind = str(body.get("kind") or "openai-compat")[:24]
+    base_url = _provider_base_url(body.get("baseUrl", p.base_url if p else ""), kind, p,
+                                  body.get("allowRootBaseUrl"))
     if p is None:
         if len(pid) > 48:
             raise HTTPException(status_code=400, detail="模型服务标识最多 48 个字符，请缩短后再保存")
@@ -1661,13 +1707,7 @@ async def put_model_provider(
     prior_connection = (p.kind, p.base_url, p.api_key)
     if "name" in body:
         p.name = str(body.get("name") or "")[:64]
-    if "kind" in body:
-        p.kind = str(body.get("kind") or "openai-compat")[:24]
-    if "baseUrl" in body:
-        b = str(body.get("baseUrl") or "").strip()[:400]
-        if b and not b.startswith(("http://", "https://")):
-            raise HTTPException(status_code=400, detail="接口地址要以 http(s):// 开头")
-        p.base_url = b
+    p.kind, p.base_url = kind, base_url
     if "enabled" in body:
         p.enabled = bool(body.get("enabled"))
     if "note" in body:

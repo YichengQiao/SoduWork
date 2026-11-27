@@ -1010,6 +1010,10 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
     if (s.localReplica === true) return { ok: false, accepted: false, notSent: true,
       reason: '本地历史为只读，请使用当前账号新建会话继续' };
     const confirmedTaskInput = Object.hasOwn(rawOptions?.taskExecution ?? {}, 'inputManifest');
+    const assignmentPluginId = rawOptions?.taskExecution?.assignmentPluginId;
+    if (assignmentPluginId && (!Array.isArray(rawOptions?.plugins) ||
+        rawOptions.plugins.length !== 1 || rawOptions.plugins[0]?.pluginId !== assignmentPluginId))
+      return { ok: false, reason: '所选插件已变化，请重新安排执行' };
     let selectedSkills;
     try { selectedSkills = skillTurn.names(rawOptions?.skills); }
     catch (error) { return skillTurn.failure(error); }
@@ -1063,6 +1067,8 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
         // dispatch manifests. Do not drop a confirmed input selection.
         if (confirmedTaskInput) return { ok: false, accepted: false, notSent: true,
           reason: '当前云端会话不能使用已确认的派发材料，请从需求派发入口重新确认' };
+        if (assignmentPluginId) return { ok: false, accepted: false, notSent: true,
+          reason: '所选插件需要本机会话才能执行' };
         return await _cloudHandoff.send(s, text, rawAttachments, rawOptions || {});
       }
     } catch (error) { return { ok: false, reason: String(error.message || error) }; }
@@ -1136,7 +1142,8 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
       return String(item || '').trim();
     }).filter(Boolean))].slice(0, 3);
     const clearPluginSelection = Boolean(rawOptions &&
-      (rawOptions.clearPluginSelection === true || rawOptions.pluginSelection === 'clear'));
+      (rawOptions.clearPluginSelection === true || rawOptions.pluginSelection === 'clear' ||
+        (taskLifecycle && assignmentPluginId === '' && !pluginIds.length)));
     const sendOptions = {
       ...(automationTurn ? { source: 'automation' } : {}),
       ...(taskTurn?.acceptanceOnly ? { beforeTurn: taskTurn.beforeTurn, afterTurn: taskTurn.afterTurn,

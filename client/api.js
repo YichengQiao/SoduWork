@@ -1636,7 +1636,7 @@
      * who={id,type} selects an agent or squad; omit it to use the configured default. brief
      * adds task-specific instructions.
      */
-    async dispatchToAI(tid, who, brief, repo, model, executionContext, submissionMode, inputManifest) {
+    async dispatchToAI(tid, who, brief, repo, model, executionContext, submissionMode, inputManifest, plugin) {
       // All interactive task entries use the same conversation send queue.
       // The main process invokes the authorized executor only at the head.
       const confirmed = inputManifest !== undefined;
@@ -1644,7 +1644,8 @@
       if (native && typeof native.enqueueTask === 'function') {
         const result = await native.enqueueTask(tid, { source: 'task-dispatch', agentId: who && who.id || '',
           assigneeType: who && who.type || 'agent', brief, repo, model, executionContext,
-          ...(submissionMode ? { submissionMode } : {}), ...(confirmed ? { inputManifest } : {}) });
+          ...(submissionMode ? { submissionMode } : {}), ...(confirmed ? { inputManifest } : {}),
+          ...(plugin !== undefined ? { assignmentPlugin: plugin } : {}) });
         if (!result || result.ok === false) {
           const error = new Error(result && (result.reason || result.error || result.message) || '需求未能进入会话队列');
           // Explicit business refusals use the same display contract as HTTP errors.
@@ -1652,6 +1653,11 @@
           throw error;
         }
         return acceptTaskResult(result);
+      }
+      if (plugin) {
+        const error = new Error('所选插件需要本机会话才能执行');
+        error.detail = error.message;
+        throw error;
       }
       requireRemoteModel(model);
       var b = who && who.id ? { assigneeId: who.id, assigneeType: who.type || 'agent' } : {};

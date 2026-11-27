@@ -187,6 +187,8 @@ async function prepare(identity, taskId, conversationId, turnId, instruction, re
     const error = new Error('需求已经结束'); error.code = 'TASK_FINISHED'; throw error;
   }
   let spec = controlled.executionSpec(task, requested);
+  if (requested.assignmentPluginId && spec.mode !== 'native')
+    throw new Error('所选插件需要本机会话才能执行');
   const reuse = requested.reuseConversation === true;
   const reworkSession = requested.reworkSession === true;
   const explicitNative = requested.executionChoice === 'native';

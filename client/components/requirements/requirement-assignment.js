@@ -8,6 +8,7 @@
   }
   function close() {
     generation++;
+    if (root) _fwdClosePluginInputs();
     if (root) global.ForwardSelect?.destroy(root);
     if (root) root.remove();
     root = null; current = null;

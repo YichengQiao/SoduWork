@@ -118,6 +118,51 @@ test('assignment methods require builtin or installed provenance plus a binding'
   ]) assert.equal(h.ctx._fwdInstalledMethod(item), expected, JSON.stringify(item));
 });
 
+test('assignment merges personal and installed enterprise plugins alongside authorized workflows', () => {
+  const h = fixture();
+  h.ctx.window.ChatPluginMentionModel = require('../components/panels/chat-plugin-mention-model.js');
+  const catalog = {items: [
+    {pluginId: 'local:note', personal: true, name: 'Personal'},
+    {pluginId: 'company-note', installed: true, name: 'Enterprise', conversationName: 'Installed version'},
+    {pluginId: 'company-note', installed: true, name: 'Duplicate record'},
+    {pluginId: 'company-flow', installed: true},
+    {pluginId: 'market'},
+    {pluginId: 'edit-only', installed: true, permissions: {canUse: false}},
+    {pluginId: 'app', personal: true, ui: {contributions: [{slot: 'workspace.navigation'}]}},
+    {pluginId: 'local:disabled', personal: true, enabled: false},
+    {pluginId: 'local:flow', personal: true, capabilities: {executionMode: 'workflow'}},
+  ]};
+  const workflows = [flow('binding', {pluginId: 'company-flow'})];
+  const methods = h.ctx._fwdCatalogMethods(catalog, {workflows});
+  assert.deepEqual(Array.from(methods, m => m.pluginId), ['local:note', 'company-note', 'local:disabled', 'local:flow']);
+  assert.equal(methods[0].blocker, '');
+  assert.equal(methods[1].blocker, '');
+  assert.equal(methods[1].name, 'Installed version');
+  assert.match(methods[2].blocker, /停用/);
+  assert.match(methods[3].blocker, /企业工作流/);
+});
+
+test('conversation plugin choice stays explicit if the eligible local agent or plugin disappears', () => {
+  const local = agent('local:pi', {executionSource: 'conversation'});
+  const remote = agent('runner:remote:pi', {locationMode: 'remote', remote: true});
+  const plugin = {pluginId: 'local:method'};
+  const choice = {type: 'direct', id: local.key, available: true};
+  const h = fixture({substrates: [local, remote], conversationPlugins: [plugin]});
+  h.run('_fwdConversationPluginId = "local:method"');
+  h.ctx._fwdChoose('task', choice);
+  assert.equal(h.ctx._fwdChoiceIsCurrent(choice), true);
+  assert.equal(h.ctx._fwdChoiceIsCurrent({...choice, id: remote.key}), false);
+  h.update({substrates: [remote], conversationPlugins: [plugin]});
+  h.ctx._fwdRestoreAIChoice();
+  assert.equal(h.run('_fwdSelection.ai'), null);
+  assert.equal(h.run('_fwdConversationPluginId'), 'local:method');
+  h.update({substrates: [local, remote], conversationPlugins: []});
+  assert.equal(h.ctx._fwdChoiceIsCurrent(choice), false);
+  h.ctx._fwdChooseNoPlugin('task');
+  assert.equal(h.run('_fwdConversationPluginId'), '');
+  assert.equal(h.ctx._fwdChoiceIsCurrent(choice), true);
+});
+
 test('plain execution defaults to a currently available Agent and never to a native conversation', () => {
   const h = fixture({substrates: [agent('offline', {available: 'offline'}), agent('first'), agent('preferred')],
     recommendation: {substrateKey: 'preferred'}});
