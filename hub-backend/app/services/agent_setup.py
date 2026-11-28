@@ -64,6 +64,7 @@ _JOBS: dict[str, dict] = {}
 _JOB_LOCK = threading.Lock()
 _JOB_THREADS: set = set()
 _LOG_CAP = 400                      # Bound log history, including verbose npm output.
+_LOG_LINE_LIMIT = 400
 
 
 # Shared helpers.
@@ -464,7 +465,7 @@ def _say(jid: str, line: str) -> None:
         j = _JOBS.get(jid)
         if j is None or j.get("_private"):
             return
-        j["lines"].append(line[:400])
+        j["lines"].append(line[:_LOG_LINE_LIMIT])
         if len(j["lines"]) > _LOG_CAP:
             del j["lines"][:len(j["lines"]) - _LOG_CAP]
 
@@ -676,15 +677,26 @@ def cancel_login(jid: str, *, owner_id: str = "") -> dict:
 
 def _run_planning(jid, action):
     from . import planning_install
+    from .planning_diagnostics import safe_exception_chain, safe_text
+
     try:
-        detail = planning_install.install(action, lambda line: _say(jid, line))
+        detail = planning_install.install(action, lambda line: _say(jid, safe_text(line)))
+    except Exception as exc:  # noqa: BLE001
+        # Raw exception tracebacks can contain pip argv, credentialed URLs or child output.
+        diagnostic = safe_exception_chain(exc)
+        log.warning("Planning %s failed (job %s): %s", action, jid, diagnostic)
+        for line in diagnostic.splitlines():
+            for offset in range(0, len(line), _LOG_LINE_LIMIT):
+                _say(jid, line[offset:offset + _LOG_LINE_LIMIT])
+        if isinstance(exc, ValueError):
+            summary = safe_text(exc, limit=240).partition("\n")[0]
+        elif isinstance(exc, OSError):
+            summary = "Planning 安装操作未完成，请查看任务日志" + planning_install.system_error_code(exc)
+        else:
+            summary = "Planning 安装操作未完成，请查看任务日志"
+        _done(jid, False, summary)
+    else:
         _done(jid, True, detail)
-    except ValueError as exc:
-        _done(jid, False, str(exc))
-    except OSError as exc:
-        _done(jid, False, "Planning 安装操作未完成，请查看最后一个步骤" + planning_install.system_error_code(exc))
-    except (RuntimeError, KeyError):
-        _done(jid, False, "Planning 安装失败，请检查软件源、用户目录和本机 Python 环境")
 
 
 def _run_managed(jid: str, key: str, action: str) -> None:

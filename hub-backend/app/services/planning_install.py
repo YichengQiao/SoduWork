@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import contextlib
-import errno
 import json
 import os
 import queue
@@ -10,13 +9,13 @@ import re
 import shutil
 import subprocess
 import tempfile
-import threading
 import time
 import uuid
 from pathlib import Path
 
 from . import planning_release as releases
-from .acp_process import OwnedProcessGroup, close_process
+from .planning_diagnostics import safe_text
+from .planning_install_process import MAX_PROBE_REPLY, capture_process
 
 # The same per-user lock is shared between all CLI processes and the installer.
 # A turn keeps its Python environment until its ACP process has exited.
@@ -132,16 +131,17 @@ def _environment():
 
 def _run(python, args, error, *, timeout=180, cwd=None):
     try:
-        result = subprocess.run([str(python), "-I", "-B", *map(str, args)], cwd=cwd, env=_environment(),
-                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                timeout=timeout, check=False,
-                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    except subprocess.TimeoutExpired as exc:
-        raise ValueError(f"{error}（超时 {timeout} 秒）") from exc
+        # The diagnostics reader uses UTF-8 on every desktop, including Windows.
+        cmd = [str(python), "-I", "-B", "-X", "utf8", *map(str, args)]
+        with capture_process(cmd, cwd=cwd, env=_environment()) as (process, _):
+            try:
+                code = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                raise ValueError(f"{error}（超时 {timeout} 秒）") from exc
+            if code:
+                raise ValueError(f"{error}（退出码 {code}）")
     except OSError as exc:
         raise ValueError(error + system_error_code(exc)) from exc
-    if result.returncode:
-        raise ValueError(f"{error}（退出码 {result.returncode}）")
 
 
 def system_error_code(exc):
@@ -151,46 +151,52 @@ def system_error_code(exc):
     return f"（errno {exc.errno}）" if isinstance(exc.errno, int) else ""
 
 
+def _check_probe_reply(line, version):
+    if isinstance(line, OSError):
+        raise line
+    if not line:
+        raise ValueError("ACP process closed stdout before its initialize response")
+    if len(line) > MAX_PROBE_REPLY:
+        raise ValueError("ACP initialize response exceeds the size limit")
+    reply = json.loads(line)
+    if not isinstance(reply, dict) or reply.get("id") != 1:
+        raise ValueError("Invalid ACP initialize response or request ID")
+    error = reply.get("error")
+    if isinstance(error, dict):
+        # Retain the standard diagnostic fields only. error.data and other
+        # fields can hold private state or even a complete protocol payload.
+        code = error.get("code")
+        label = "ACP initialize returned a JSON-RPC error"
+        if type(code) is int and -(2**31) <= code < 2**31:
+            label += f" (code {code})"
+        message = error.get("message")
+        if isinstance(message, str) and message:
+            label += ": " + safe_text(message, limit=400)
+        raise ValueError(label)
+    result = reply.get("result")
+    if not isinstance(result, dict) or result.get("protocolVersion") != 1:
+        raise ValueError("ACP protocol version mismatch")
+    agent = result.get("agentInfo")
+    if not isinstance(agent, dict) or agent.get("name") != "planning-harness" or agent.get("version") != version:
+        raise ValueError("ACP identity mismatch")
+
+
 def _handshake(python, version, state):
-    args = [str(python), "-I", "-B", "-u", "-m", releases.MODULE + ".launch", "acp"]
+    args = [str(python), "-I", "-B", "-X", "utf8", "-u", "-m", releases.MODULE + ".launch", "acp"]
     env = {**_environment(), "PLANNING_STATE_DIR": str(Path(state).resolve())}
-    process = subprocess.Popen(args, env=env, cwd=state, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                               stderr=subprocess.DEVNULL, start_new_session=os.name != "nt",
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    group = OwnedProcessGroup(process.pid) if os.name != "nt" else None
-    response = queue.Queue(maxsize=1)
-    readers = []
     try:
-        thread = threading.Thread(target=lambda: response.put(process.stdout.readline(1024 * 1024)), daemon=True)
-        thread.start()
-        readers.append(thread)
-        request = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                   "params": {"protocolVersion": 1, "clientCapabilities": {}}}
-        process.stdin.write((json.dumps(request) + "\n").encode("utf-8"))
-        process.stdin.flush()
-        reply = json.loads(response.get(timeout=25))
-        result = reply.get("result") or {}
-        agent = result.get("agentInfo") or {}
-        if (reply.get("id") != 1 or result.get("protocolVersion") != 1 or
-                agent.get("name") != "planning-harness" or agent.get("version") != version):
-            raise ValueError("ACP identity mismatch")
-    except (ValueError, AttributeError, OSError, queue.Empty) as exc:
+        with capture_process(args, env=env, cwd=state, probe=True) as (process, response):
+            request = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                       "params": {"protocolVersion": 1, "clientCapabilities": {}}}
+            process.stdin.write((json.dumps(request) + "\n").encode("utf-8"))
+            process.stdin.flush()
+            try:
+                line = response.get(timeout=25)
+            except queue.Empty as exc:
+                raise ValueError("ACP initialize timed out after 25 seconds") from exc
+            _check_probe_reply(line, version)
+    except (ValueError, RecursionError, OSError) as exc:
         raise ValueError("已下载的软件包未通过本机 Planning ACP 握手") from exc
-    finally:
-        # The Windows venv launcher can be a parent of the actual interpreter.
-        # EOF lets the ACP service close its SQLite connection before cleanup.
-        try:
-            try:
-                process.stdin.close()
-            except OSError as exc:
-                if not isinstance(exc, BrokenPipeError) and not (os.name == "nt" and exc.errno == errno.EINVAL):
-                    raise
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                pass
-        finally:
-            close_process(process, readers, group)
 
 
 def _remove_probe(state):

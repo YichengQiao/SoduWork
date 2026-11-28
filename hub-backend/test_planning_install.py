@@ -61,8 +61,10 @@ class ReleaseTests(unittest.TestCase):
         with patch.dict(os.environ, {**source_env, "SODUWORK_SOURCE_RUNNER_PYTHON": "python"}, clear=True):
             with self.assertRaisesRegex(ValueError, "源码启动器"):
                 install._bootstrap_python()
+        spawn = subprocess.Popen
         with patch.dict(os.environ, source_env, clear=True), patch.object(
-                subprocess, "run", return_value=subprocess.CompletedProcess([], 1)) as probe:
+                subprocess, "Popen", side_effect=lambda args, **kw: spawn(
+                    [args[0], "-c", "raise SystemExit(1)"], **kw)) as probe:
             with self.assertRaisesRegex(ValueError, "源码启动 Planning 需要使用 CPython 3.12"):
                 install._bootstrap_python()
             self.assertIn("sys.version_info[:2] != (3,12)", probe.call_args.args[0][-1])
@@ -269,3 +271,111 @@ class ProbeCleanupTests(unittest.TestCase):
         with patch.object(install.shutil, "rmtree", side_effect=[error, None]) as remove, patch.object(install.time, "sleep"):
             install._remove_probe("probe-fixture")
             self.assertEqual(remove.call_count, 2)
+
+
+class InstallationDiagnosticTests(unittest.TestCase):
+    def failed_job(self, operation):
+        owner = "test-diagnostic-owner"
+        with patch.object(install, "install", side_effect=operation), \
+                patch.object(agent_setup, "_spawn", side_effect=agent_setup._guard), \
+                self.assertLogs("uvicorn.error", level="WARNING") as captured:
+            job_id = agent_setup.start_install("ai-planning", "install", owner_id=owner)
+            self.addCleanup(agent_setup._JOBS.pop, job_id, None)
+        job = agent_setup.job(job_id, owner_id=owner, include_private=True)
+        self.assertEqual((job["state"], job["ok"]), ("done", False))
+        self.assertIsNone(agent_setup.job(job_id, owner_id="other", include_private=True))
+        self.assertLess(len(job["detail"]), 300)
+        return job["detail"], "\n".join(job["lines"]), "\n".join(captured.output)
+
+    def test_failed_pip_stage_preserves_bounded_stdout_and_stderr(self):
+        script = """
+import os, sys
+sys.stdout.write('pip progress\\n' * 20000)
+sys.stderr.write('Authorization: Bearer ' + 'A' * 100000 + 'clipped-secret-suffix\\n')
+print('Proxy-Authorization: NTLM fixture-proxy-credential', file=sys.stderr)
+print('403 on /repository/wheel?X-Amz-Signature=fixture-signed-query', file=sys.stderr)
+print('Backend said: ' + os.environ['FIXTURE_REPO_TOKEN'], file=sys.stderr)
+print('FIXTURE-WHEEL-NOT-FOUND https://fixture-user:fixture-pass@registry.invalid/simple/', flush=True)
+print('FIXTURE-HASH-MISMATCH', file=sys.stderr, flush=True)
+sys.exit(7)
+"""
+        def fail(action, say):
+            install._run(sys.executable, ["-c", script], "wheel download failed")
+
+        with patch.dict(os.environ, {"FIXTURE_REPO_TOKEN": "fixture-private-env-value"}):
+            summary, job_log, runner_log = self.failed_job(fail)
+        self.assertIn("wheel download failed", summary)
+        self.assertIn("7", summary)
+        for output in (job_log, runner_log):
+            self.assertIn("FIXTURE-WHEEL-NOT-FOUND", output)
+            self.assertIn("FIXTURE-HASH-MISMATCH", output)
+            self.assertLess(len(output), 6000)
+        self.assertIn("FIXTURE-HASH-MISMATCH", "\n".join(job_log.splitlines()[-40:]))
+        for secret in ("fixture-pass", "clipped-secret-suffix", "fixture-proxy-credential",
+                       "fixture-private-env-value", "fixture-signed-query"):
+            self.assertNotIn(secret, summary + job_log + runner_log)
+
+    def failed_probe(self, script):
+        spawn = subprocess.Popen
+        def fail(action, say):
+            with tempfile.TemporaryDirectory() as state, patch.object(
+                    subprocess, "Popen", side_effect=lambda args, **kw: spawn(
+                        [args[0], "-I", "-u", "-c", script], **kw)):
+                install._handshake(sys.executable, "0.2.1", state)
+
+        return self.failed_job(fail)
+
+    def test_acp_startup_failure_records_stderr_without_echoing_protocol_frames(self):
+        summary, job_log, runner_log = self.failed_probe("""
+import sys
+sys.stdin.readline()
+print('FIXTURE-ACP-IMPORT: missing module', file=sys.stderr, flush=True)
+print('Authorization: Bearer fixture-acp-bearer', file=sys.stderr, flush=True)
+print('{"debug": "fixture-private-protocol-payload"}', flush=True)
+sys.exit(3)
+""")
+        self.assertIn("ACP", summary)
+        for output in (job_log, runner_log):
+            self.assertIn("FIXTURE-ACP-IMPORT", output)
+        for value in ("fixture-acp-bearer", "fixture-private-protocol-payload"):
+            self.assertNotIn(value, summary + job_log + runner_log)
+
+    def test_acp_error_without_stderr_retains_safe_rpc_reason(self):
+        summary, job_log, runner_log = self.failed_probe("""
+import json, sys
+request = json.loads(sys.stdin.readline())
+print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "error": {
+    "code": -32042, "message": "FIXTURE-ADAPTER-UNAVAILABLE token=fixture-rpc-secret",
+    "data": {"session": "fixture-private-session-data"}
+}}), flush=True)
+""")
+        for output in (job_log, runner_log):
+            self.assertIn("-32042", output)
+            self.assertIn("FIXTURE-ADAPTER-UNAVAILABLE", output)
+        for value in ("fixture-rpc-secret", "fixture-private-session-data"):
+            self.assertNotIn(value, summary + job_log + runner_log)
+
+    def test_runner_log_keeps_sanitized_exception_causes(self):
+        def fail(action, say):
+            try:
+                raise OSError("FIXTURE-CERTIFICATE-VERIFY-FAILED at https://fixture-user:fixture-cause-pass@registry.invalid")
+            except OSError as cause:
+                raise ValueError("could not access Planning index") from cause
+
+        summary, job_log, runner_log = self.failed_job(fail)
+        self.assertIn("could not access Planning index", summary)
+        self.assertIn("OSError", runner_log)
+        self.assertIn("FIXTURE-CERTIFICATE-VERIFY-FAILED", runner_log)
+        self.assertNotIn("fixture-cause-pass", summary + job_log + runner_log)
+
+    def test_timeout_keeps_stderr_and_hides_subprocess_arguments(self):
+        def fail(action, say):
+            install._run(sys.executable, ["-u", "-c",
+                "import sys, time; print('FIXTURE-CONNECT-RETRY', file=sys.stderr); time.sleep(20)",
+                "fixture-private-argument"], "wheel download failed", timeout=2)
+
+        summary, job_log, runner_log = self.failed_job(fail)
+        self.assertIn("wheel download failed", summary)
+        for output in (job_log, runner_log):
+            self.assertIn("FIXTURE-CONNECT-RETRY", output)
+        self.assertNotIn("fixture-private-argument", summary + job_log + runner_log)
